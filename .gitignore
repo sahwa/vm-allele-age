@@ -1,0 +1,23 @@
+# Simulation outputs - too large for git
+*.trees
+*.vcf
+*.vcf.gz
+*.bed
+*.bim
+*.fam
+*.grm*
+
+# Data
+*.csv
+!example_*.csv
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+
+# R
+.Rhistory
+.RData
+.Rproj.user/

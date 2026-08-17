@@ -1,0 +1,34 @@
+initialize() {
+    defineConstant("L", 1e8);
+    initializeTreeSeq();
+    initializeMutationRate(0);          // no mutations at all
+    initializeRecombinationRate(1e-8);
+    initializeMutationType("m2", 0.5, "f", 0.0);   // still needed to define a type
+    initializeGenomicElementType("g2", m2, 1);
+    initializeGenomicElement(g2, 0, L-1);
+}
+
+1 early() { sim.addSubpop("p1", 20000); }
+
+initialize() {
+    defineConstant("start_time", clock());
+}
+
+1: late() {
+    if (community.tick % 1000 == 0) {
+        elapsed = clock() - start_time;
+        gen_per_sec = community.tick / elapsed;
+        remaining_gens = 100000 - community.tick;
+        remaining_secs = remaining_gens / gen_per_sec;
+        cat("Generation " + community.tick + " / 100000  "
+            + "(" + format("%.1f", elapsed) + "s elapsed, "
+            + format("%.0f", remaining_secs) + "s remaining)\n");
+    }
+}
+
+100000 late() {
+    sim.treeSeqOutput(outfile + ".trees");
+    sim.simulationFinished();
+}
+
+
