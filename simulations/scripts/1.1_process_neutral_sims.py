@@ -13,9 +13,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.ticker import NullFormatter
 from pathlib import Path
+import subprocess
+import os
 
 
-SIM_NE = 20000
+SIM_NE = 100000
 SIM_MU = 1e-8
 RNG_SEED = 42
 RECOMBINATION_RATE = 1e-8
@@ -24,8 +26,9 @@ MU = 1.44e-8 # per base mutation rate
 PI_TARGET = 0.01 # fraction of the genome that's a mutational target
 
 SIM_PATH="/Users/samm/Documents/Work/Projects/Vm/simulations/data"
+SIM_VERSION="1.1"
 
-SIM_VERSION = "1.0"
+np.random.default_rng(42)
 
 # ---------------------------------------------------------------
 # 1. Load the SLiM tree sequence
@@ -77,10 +80,6 @@ mts = msprime.sim_mutations(
     model=msprime.SLiMMutationModel(type=0),  # keeps SLiM-style metadata
     keep=True,   # keep any mutations already present (none, here)
 )
-
-n_multiroot = sum(1 for t in mts.trees() if t.num_roots > 1)
-print(f"Loaded: {mts.num_samples} samples, {mts.num_trees} trees, "
-      f"{n_multiroot} not yet coalesced")
 
 
 print(f"After mutation overlay: {mts.num_sites} sites, "
@@ -178,15 +177,8 @@ for lo, hi in zip(bins[:-1], bins[1:]):
     n_bin = m.sum()
     print(f"{lo}-{hi}: n={n_bin}, V={V_bin:.4g}, K̄={K_bar:.3f} ± {K_bar/np.sqrt(n_bin):.3f}, K_bar_expected={K_bar_expected:.3f}")
 
-
-SIM_NE = 20000
-V_M_true = 0.0288
-
-bin_lo = np.array([0, 25, 50, 100, 200, 500, 1000, 2000, 5000, 20000])
-bin_hi = np.array([25, 50, 100, 200, 500, 1000, 2000, 5000, 20000, np.inf])
-
 # ---------------------------------------------------------------
-# 8. Check per bin V_bin
+# 8. True per-bin variance (before touching a GRM or REML)
 # ---------------------------------------------------------------
 
 for lo, hi in zip(bins[:-1], bins[1:]):
@@ -195,6 +187,35 @@ for lo, hi in zip(bins[:-1], bins[1:]):
     K_int = 2*SIM_NE*(np.exp(-lo/(2*SIM_NE)) - (0 if np.isinf(hi) else np.exp(-hi/(2*SIM_NE))))
     print(f"{lo}-{hi}: n={m.sum()}, obs={V_bin:.4g}, pred={V_M_true*K_int:.4g}, "
           f"ratio={V_bin/(V_M_true*K_int):.3f}")
+
+
+# ---------------------------------------------------------------
+# 8. Write binned files to .bed format 
+# ---------------------------------------------------------------
+
+vcf_file = "all_variants.vcf.gz"
+VCF_FILE = Path(SIM_PATH) / f"{SIM_VERSION}_neutral_out.vcf"
+
+with gzip.open(vcf_file, 'wt') as f:
+    mts.write_vcf(f)
+
+for lo, hi in zip(bins[:-1], bins[1:]):
+    m = (ages >= lo) & (ages < hi)
+    variant_ids = np.where(m)[0]
+    
+    # Write variant IDs to file
+    var_file = f"bin_{lo}_{hi}_vars.txt"
+    np.savetxt(var_file, variant_ids + 1, fmt='%d')  # +1 because plink uses 1-based
+    
+    # Use plink to extract these variants and convert to .bed
+    prefix = f"bin_{lo}_{hi}"
+    cmd = f"plink2 --vcf {vcf_file} --extract {var_file} --make-bed --out {prefix}"
+    subprocess.run(cmd, shell=True, check=True)
+    
+    print(f"Wrote {prefix}.bed/bim/fam with {m.sum()} variants")
+    
+    # Clean up temp file
+    os.remove(var_file)
 
 
 # ---------------------------------------------------------------
