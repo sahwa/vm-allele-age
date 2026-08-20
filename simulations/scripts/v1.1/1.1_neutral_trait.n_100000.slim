@@ -1,0 +1,39 @@
+// updated from version 1.0:
+// [1]: increase N to 100 000 individuals so they are less related and we have a larger
+//	sample size for GREML construction - also more mutations to use
+// [2]: reduce the burn-in to 10 000 - since we can rely on recapitation - but make sure 
+// 	to check we have actually reached mutation-drift equilibrium 
+initialize() {
+    defineConstant("N", 100000);
+    defineConstant("L", 1e8);
+    initializeTreeSeq();
+    initializeMutationRate(0);
+    initializeRecombinationRate(1e-8);
+    initializeMutationType("m2", 0.5, "f", 0.0);
+    initializeGenomicElementType("g2", m2, 1);
+    initializeGenomicElement(g2, 0, L-1);
+    defineConstant("START_TIME", clock());
+}
+1 early() { sim.addSubpop("p1", N); }
+1: late() {
+    if (community.tick % 1000 == 0) {
+        elapsed = clock() - START_TIME;
+        ticks_per_sec = community.tick / elapsed;
+        remaining_ticks = END_TICK - community.tick;
+        remaining_secs = remaining_ticks / ticks_per_sec;
+        pct = 100 * community.tick / END_TICK;
+        cat("Tick " + community.tick + " / " + END_TICK
+            + " (" + format("%.1f", pct) + "%)  "
+            + format("%.0f", elapsed) + "s elapsed, "
+            + format("%.0f", remaining_secs) + "s remaining\n");
+        // periodic simplification keeps memory/runtime manageable
+        sim.treeSeqSimplify();
+    }
+}
+END_TICK late() {
+    total_time = clock() - START_TIME;
+    cat("Finished at tick " + community.tick + " in "
+        + format("%.0f", total_time) + "s\n");
+    sim.treeSeqOutput(outfile + ".trees");
+    sim.simulationFinished();
+}

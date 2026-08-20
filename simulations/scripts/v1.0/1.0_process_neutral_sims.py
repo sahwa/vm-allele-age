@@ -10,8 +10,6 @@ import pyslim
 import msprime
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from matplotlib.ticker import NullFormatter
 from pathlib import Path
 
 
@@ -23,9 +21,12 @@ RECOMBINATION_RATE = 1e-8
 MU = 1.44e-8 # per base mutation rate 
 PI_TARGET = 0.01 # fraction of the genome that's a mutational target
 
-SIM_PATH="/Users/samm/Documents/Work/Projects/Vm/simulations/data"
+SIM_PATH="/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data"
 
 SIM_VERSION = "1.0"
+
+VCF_OUT = Path(SIM_PATH) / f"{SIM_VERSION}_neutral_out.vcf"
+PHENOTYPE_OUT = Path(SIM_PATH) / f"{SIM_VERSION}_neutral_out.phenotypes"
 
 # ---------------------------------------------------------------
 # 1. Load the SLiM tree sequence
@@ -74,14 +75,13 @@ mts = msprime.sim_mutations(
     rts,
     rate=MU * PI_TARGET, # because we only want to simulate them at a rate of mutational target 
     random_seed=RNG_SEED,
-    model=msprime.SLiMMutationModel(type=0),  # keeps SLiM-style metadata
+    model=msprime.JC69(),  # keeps SLiM-style metadata
     keep=True,   # keep any mutations already present (none, here)
 )
 
 n_multiroot = sum(1 for t in mts.trees() if t.num_roots > 1)
 print(f"Loaded: {mts.num_samples} samples, {mts.num_trees} trees, "
       f"{n_multiroot} not yet coalesced")
-
 
 print(f"After mutation overlay: {mts.num_sites} sites, "
       f"{mts.num_mutations} mutations")
@@ -200,6 +200,11 @@ for lo, hi in zip(bins[:-1], bins[1:]):
 # ---------------------------------------------------------------
 # 9. Write outputs for downstream R analysis
 # ---------------------------------------------------------------
+n_dip = mts.num_samples // 2
+names = [f"ind{i}" for i in range(n_dip)]
+with open(VCF_OUT, "w") as f:
+    mts.write_vcf(f, individual_names=names)
+
 pd.DataFrame({
     "site_id": np.arange(M),
     "position": positions,
@@ -209,12 +214,9 @@ pd.DataFrame({
 }).to_csv("variant_info.csv", index=False)
 
 pd.DataFrame({
-    "sample_id": np.arange(n_sample),
-    "y": y,
-    "g": g,
-}).to_csv("phenotypes.csv", index=False)
-
-with open("out.vcf", "w") as f:
-    mts.write_vcf(f, individuals=sample_idx)
+    "FID": 0,
+    "IID": names,
+    "Phenotype": y,
+}).to_csv(PHENOTYPE_OUT, index=False, header=False, sep=" ")
 
 print("\nWrote variant_info.csv, phenotypes.csv, out.vcf")
