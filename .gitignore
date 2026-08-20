@@ -17,6 +17,10 @@ __pycache__/
 .ipynb_checkpoints/
 .DS_Store
 
+# log files from jobs
+*err
+*out
+
 # R
 .Rhistory
 .RData
