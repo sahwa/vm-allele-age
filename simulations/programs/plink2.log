@@ -1,0 +1,12 @@
+PLINK v2.0.0-a.6.9LM 64-bit Intel (29 Jan 2025)
+Options in effect:
+  --vcf /well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v1.1/1.1_neutral_out.vcf GENIE/--make-bed GENIE/--max-alleles 2 GENIE/--min-alleles 2 GENIE/--out /well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v1.1/_neutral_out
+
+Hostname: cluster3.hpc.in.bmrc.ox.ac.uk
+Working directory: /exafs1/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/programs
+Start time: Mon Aug 24 10:17:54 2026
+
+Error: --vcf accepts at most 2 arguments.
+For more info, try "plink2 --help <flag name>" or "plink2 --help | more".
+
+End time: Mon Aug 24 10:17:54 2026

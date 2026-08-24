@@ -1,13 +1,16 @@
-vim#!/bin/bash
+#!/bin/bash
 #SBATCH -A visscher-wray.prj
-#SBATCH -J 1.1_neutral_trait.submit_slim
-#SBATCH -o 1.1_neutral_trait.submit_slim.%A_%a.out
-#SBATCH -e 1.1_neutral_trait.submit_slim.%A_%a.err
+#SBATCH -J 1.1_process
+#SBATCH -o 1.1_process.%A.out
+#SBATCH -e 1.1_process.%A.err
 #SBATCH -p short
-#SBATCH -c 2
-#SBATCH --mem=32G
+#SBATCH -c 5
+#SBATCH --mem=48G
+#SBATCH -t 08:00:00
 
-DATA=/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data
+DATA=/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v1.1
+
+python 1.1_process_neutral_sims.py
 
 bins="$(ls ${DATA}/1.0_neutral_out.variant_info_age_*csv)"
 
@@ -21,4 +24,5 @@ ls 1.0_neutral_out.variant_info_age_*.grm.bin | \
 cut -d'.' -f1-3 | \
 sort -V > 1.0_neutral_out.variant_info_age.grm.bin.list
 
-gcta64 --reml --mgrm 1.0_neutral_out.variant_info_age.grm.bin.list --pheno 1.0_neutral_out.phenotypes --out 1.0_neutral_out
+gcta64 --reml --mgrm ${DATA}/1.0_neutral_out.variant_info_age.grm.bin.list --pheno ${DATA}/1.0_neutral_out.phenotypes --out ${DATA}/1.0_neutral_out.phenotypes
+
