@@ -30,3 +30,11 @@ ${GENIE} \
 	--output ${DATA}/1.1_neutral_out_GENIE \
 	--model G
 
+### testing using just one bin ###
+awk '{print 1}' ${DATA}/${VERSION}_neutral_out.bim > ${DATA}/single_annot.txt
+${GENIE} --genotype ${DATA}/${VERSION}_neutral_out \
+         --phenotype ${DATA}/1.1_phenotypes.GENIE.txt \
+         --annot ${DATA}/single_annot.txt \
+         --output ${DATA}/1.1_test_single \
+         --model G
+		 

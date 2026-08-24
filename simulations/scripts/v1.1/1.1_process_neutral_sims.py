@@ -21,6 +21,12 @@ import tskit
 # =================================================================
 SIM_NE = 100000
 RNG_SEED = 42
+
+seeds = np.random.SeedSequence(RNG_SEED).spawn(3)
+rng_beta = np.random.default_rng(seeds[0])
+rng_sample = np.random.default_rng(seeds[1])
+rng_noise = np.random.default_rng(seeds[2])
+
 RECOMBINATION_RATE = 1e-8   # must match initializeRecombinationRate() in the .slim script
 
 MU = 1.44e-8                # per base per generation mutation rate
@@ -42,8 +48,6 @@ MUT_TREE_FILE = SIM_PATH / f"{SIM_VERSION}_neutral_out.recap.mut.trees"
 VCF_FILE = SIM_PATH / f"{SIM_VERSION}_neutral_out.vcf"
 GENOME_PREFIX = SIM_PATH / f"{SIM_VERSION}_neutral_out"
 
-rng = np.random.default_rng(RNG_SEED)
-
 # =================================================================
 # 1. Load the SLiM tree sequence
 # =================================================================
@@ -51,28 +55,28 @@ rng = np.random.default_rng(RNG_SEED)
 # because the trait is neutral: nothing in the forward sim depends on where
 # the mutations landed, so msprime can paint them on afterwards far more
 # cheaply than tracking them in SLiM itself.
-ts = tskit.load(TREE_FILE)
+# ts = tskit.load(TREE_FILE)
 
-n_multiroot = sum(1 for t in ts.trees() if t.num_roots > 1)
-print(f"Loaded: {ts.num_samples} samples, {ts.num_trees} trees, "
-      f"{n_multiroot} not yet coalesced", flush=True)
+# n_multiroot = sum(1 for t in ts.trees() if t.num_roots > 1)
+# print(f"Loaded: {ts.num_samples} samples, {ts.num_trees} trees, "
+#       f"{n_multiroot} not yet coalesced", flush=True)
 
 # =================================================================
 # 2. Recapitate (complete the ancient history with the msprime coalescent)
 #    ancestral_Ne must match the SLiM population size.
 # =================================================================
-print("Recapitating (this is the slow step)...", flush=True)
-rts = pyslim.recapitate(
-    ts,
-    recombination_rate=RECOMBINATION_RATE,
-    ancestral_Ne=SIM_NE,
-    random_seed=RNG_SEED,
-)
+# print("Recapitating (this is the slow step)...", flush=True)
+# rts = pyslim.recapitate(
+#     ts,
+#     recombination_rate=RECOMBINATION_RATE,
+#     ancestral_Ne=SIM_NE,
+#     random_seed=RNG_SEED,
+# )
 
-n_multiroot_after = sum(1 for t in rts.trees() if t.num_roots > 1)
-print(f"After recapitation: {n_multiroot_after} not yet coalesced (should be 0)",
-      flush=True)
-assert n_multiroot_after == 0, "Recapitation incomplete - check ancestral_Ne"
+# n_multiroot_after = sum(1 for t in rts.trees() if t.num_roots > 1)
+# print(f"After recapitation: {n_multiroot_after} not yet coalesced (should be 0)",
+#       flush=True)
+# assert n_multiroot_after == 0, "Recapitation incomplete - check ancestral_Ne"
 
 # =================================================================
 # 3. Overlay neutral QTL mutations
@@ -82,16 +86,16 @@ assert n_multiroot_after == 0, "Recapitation incomplete - check ancestral_Ne"
 #    targets. JC69 gives real A/C/G/T alleles, which plink and later dating
 #    tools need.
 # =================================================================
-print("Overlaying mutations...", flush=True)
-mts = msprime.sim_mutations(
-    rts,
-    rate=MU * PI_TARGET,
-    random_seed=RNG_SEED,
-    model=msprime.JC69(),
-    keep=True,
-)
-print(f"After mutation overlay: {mts.num_sites} sites, "
-      f"{mts.num_mutations} mutations", flush=True)
+# print("Overlaying mutations...", flush=True)
+# mts = msprime.sim_mutations(
+#     rts,
+#     rate=MU * PI_TARGET,
+#     random_seed=RNG_SEED,
+#     model=msprime.JC69(),
+#     keep=True,
+# )
+# print(f"After mutation overlay: {mts.num_sites} sites, "
+#       f"{mts.num_mutations} mutations", flush=True)
 
 # =================================================================
 # 4. Strip multiallelic sites directly from mts.
@@ -99,25 +103,28 @@ print(f"After mutation overlay: {mts.num_sites} sites, "
 #    the VCF write, and the plink/GENIE outputs are automatically in
 #    lockstep - no separate masking or post-hoc row-matching needed.
 # =================================================================
-multiallelic_site_ids = np.array(
-    [site.id for site in mts.sites() if len(site.mutations) > 1]
-)
-print(f"Removing {len(multiallelic_site_ids)} multiallelic sites "
-      f"out of {mts.num_sites}", flush=True)
+# multiallelic_site_ids = np.array(
+#     [site.id for site in mts.sites() if len(site.mutations) > 1]
+# )
+# print(f"Removing {len(multiallelic_site_ids)} multiallelic sites "
+#       f"out of {mts.num_sites}", flush=True)
 
-tables = mts.dump_tables()
-tables.delete_sites(multiallelic_site_ids)
-tables.sort()
-mts = tables.tree_sequence()
-print(f"mts now has {mts.num_sites} biallelic sites", flush=True)
+# tables = mts.dump_tables()
+# tables.delete_sites(multiallelic_site_ids)
+# tables.sort()
+# mts = tables.tree_sequence()
+# print(f"mts now has {mts.num_sites} biallelic sites", flush=True)
 
-mts.dump(MUT_TREE_FILE)
+# mts.dump(MUT_TREE_FILE)
 
 # =================================================================
 # 5. Extract true ages, frequencies, positions
 #    mts is guaranteed biallelic at this point, so no per-variant
 #    filtering is needed here.
 # =================================================================
+
+mts = tskit.load(MUT_TREE_FILE)
+
 ages, freqs, positions = [], [], []
 for var in mts.variants():
     mut = mts.mutation(var.site.mutations[0].id)
@@ -137,7 +144,7 @@ print(f"Freq range: {freqs.min():.5f} - {freqs.max():.5f}")
 # =================================================================
 # 6. Assign effect sizes (neutral trait: independent of age and frequency)
 # =================================================================
-beta = rng.normal(0, SIGMA_BETA, size=M)
+beta = rng_beta.normal(0, SIGMA_BETA, size=M)
 
 # =================================================================
 # 7. Ground-truth V_M and V_A checks
@@ -172,6 +179,7 @@ print(f"Ratio empirical/analytic: {V_A_empirical / V_A_analytic:.3f}  "
 # =================================================================
 n_dip_all = mts.num_samples // 2
 print(f"\nBuilding genetic values for all {n_dip_all} diploids...", flush=True)
+print(mts.num_individuals, n_dip_all)  # do these match?
 
 g_all = np.zeros(n_dip_all)
 for i, var in enumerate(mts.variants()):
@@ -182,11 +190,11 @@ print(f"V_A across all individuals: {np.var(g_all):.4g} "
       f"(expect ~{V_A_empirical:.4g}; small gap is LD)", flush=True)
 
 n_sample = min(N_SAMPLE_TARGET, n_dip_all)
-sample_idx = np.sort(rng.choice(n_dip_all, n_sample, replace=False))
+sample_idx = np.sort(rng_sample.choice(n_dip_all, n_sample, replace=False))
 g = g_all[sample_idx]
 
 V_E = np.var(g) * (1 - H2) / H2
-y = g + rng.normal(0, np.sqrt(V_E), n_sample)
+y = g + rng_noise.normal(0, np.sqrt(V_E), n_sample)
 
 print(f"Sampled {n_sample} of {n_dip_all} diploids")
 print(f"V_A in sample: {np.var(g):.4g},  V_E: {V_E:.4g}")
@@ -246,11 +254,29 @@ with open(VCF_FILE, "wt") as f:
     mts.write_vcf(f, individuals=sample_idx, individual_names=indv_names)
 
 # =================================================================
-# 11. Genome-wide plink fileset (this .bim defines row order for the
-#     GENIE annotation matrix built in step 13).
+# 11. Genome-wide plink fileset, MAF-filtered.
+#     Filtering removes any variant monomorphic in the *sampled*
+#     50,000 individuals (GENIE requires MAF > 0). This changes
+#     which variants survive relative to `ages`/`bins_assigned`,
+#     which were built over the full population - so the annotation
+#     must be rebuilt from this .bim, matched by position, not
+#     reused from the pre-filter arrays.
 # =================================================================
-cmd = f"plink2 --vcf {VCF_FILE} --make-bed --out {GENOME_PREFIX}"
+cmd = (f"plink2 --vcf {VCF_FILE} --maf 0.0000001 "
+       f"--make-bed --out {GENOME_PREFIX}")
 subprocess.run(cmd, shell=True, check=True)
+
+bim = pd.read_csv(f"{GENOME_PREFIX}.bim", sep="\t", header=None,
+                   names=["chr", "snpid", "cm", "pos", "a1", "a2"])
+print(f"After MAF filtering: {len(bim)} of {M} variants retained "
+      f"({M - len(bim)} dropped as monomorphic in the sample)", flush=True)
+
+# Reindex ages/bins to match the filtered .bim, by position.
+pos_to_age = pd.Series(ages, index=positions)
+ages_filtered = pos_to_age.loc[bim["pos"].values].to_numpy()
+bins_assigned_filtered = pd.cut(ages_filtered, bins=BINS,
+                                 labels=bin_labels, right=False)
+
 
 # =================================================================
 # 12. Per-bin plink files (for GCTA / GRM-based diagnostics)
@@ -279,13 +305,11 @@ for lo, hi in zip(BINS[:-1], BINS[1:]):
     os.remove(var_file)
 
 # =================================================================
-# 13. GENIE annotation matrix
-#     Since mts was already stripped of multiallelic sites before the
-#     VCF/plink files were written, `ages` and `bins_assigned` are in
-#     the exact same order as the genome-wide .bim - no row-matching
-#     required. Per GENIE's docs: no header, space-delimited.
+# 13. GENIE annotation matrix — built from the MAF-filtered .bim,
+#     so row count and order match the genome-wide genotype file
+#     GENIE will actually load.
 # =================================================================
-annotations = pd.get_dummies(bins_assigned, prefix="bin", prefix_sep="_")
+annotations = pd.get_dummies(bins_assigned_filtered, prefix="bin", prefix_sep="_").astype(int)
 
 annotations.to_csv(
     SIM_PATH / f"{SIM_VERSION}_annotations_age_bins.txt",
@@ -300,6 +324,7 @@ legend.to_csv(
     SIM_PATH / f"{SIM_VERSION}_annotations_legend.txt",
     sep=" ", index=False,
 )
+
 
 # =================================================================
 # 14. Variant info and phenotype files for downstream analysis

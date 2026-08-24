@@ -26,3 +26,7 @@ sort -V > 1.0_neutral_out.variant_info_age.grm.bin.list
 
 gcta64 --reml --mgrm ${DATA}/1.0_neutral_out.variant_info_age.grm.bin.list --pheno ${DATA}/1.0_neutral_out.phenotypes --out ${DATA}/1.0_neutral_out.phenotypes
 
+
+### run single component REML just to check first ###
+plink2 --bfile ${DATA}/1.1_neutral_out --make-grm-bin --out ${DATA}/1.1_neutral_out
+gcta64 --reml --pheno ${DATA}/1.1_phenotypes.txt --out ${DATA}/1.1_neutral_out.phenotypes --grm ${DATA}/1.1_neutral_out
