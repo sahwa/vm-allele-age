@@ -10,5 +10,6 @@ Estimating $V_{M}$ in humans by partitioning heritability by allele age.
 ## Status
 - [x] Neutral simulation validated: $V_{A}$ empirical/analytic = 1.004
 - [x] Per-bin K̄ matches analytic kernel
-- [ ] GRM + REML recovery of $V_{bin}$
+- [x] GRM + REML recovery of $V_{bin}$
+- [x] GENIE estimate of variance components
 - [ ] Selection models
