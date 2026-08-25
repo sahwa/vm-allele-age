@@ -1,0 +1,51 @@
+// updated from version 1.1:
+// [1]: Add in mutations with fitness effects - sweep over a range of
+//      parameters, probably V_S = [5, 20, 100], where V_S is the width of
+//      the fitness function and s ~ beta^2 / (2*V_S) for a mutation of effect beta
+// [2]: Recapitation stops working under selection :(, since msprime's coalescent
+//      doesn't know about fitness - so we need a full forward burn-in on the
+//      order of 4-5*Ne generations. Reducing Ne to keep runtime tractable.
+
+initialize() {
+    defineConstant("N", 10000);
+    defineConstant("L", 1e8);
+    defineConstant("start_time", clock());
+    initializeTreeSeq();
+    initializeMutationRate(MU * PI_TARGET);
+    initializeRecombinationRate(1e-8);
+    initializeMutationType("m2", 0.5, "n", 0.0, 0.1);  // effect sizes ~ N(0, 0.1)
+    m2.convertToSubstitution = F;
+    initializeGenomicElementType("g2", m2, 1);
+    initializeGenomicElement(g2, 0, L-1);
+}
+
+mutationEffect(m2) { return 1.0; }   // neutral at the locus level
+
+fitnessEffect() {
+    phenotype = individual.sumOfMutationsOfType(m2);
+    return exp(-(phenotype^2) / (2 * V_S));
+}
+
+1 early() { sim.addSubpop("p1", N); }
+
+1: late() {
+    if (community.tick % 1000 == 0) {
+        elapsed = clock() - start_time;
+        gen_per_sec = community.tick / elapsed;
+        remaining_gens = END_TICK - community.tick;
+        remaining_secs = remaining_gens / gen_per_sec;
+
+        inds = sim.subpopulations.individuals;
+        phenotypes = inds.sumOfMutationsOfType(m2);
+
+        cat("Tick " + community.tick + " / " + END_TICK
+            + "  V_P: " + format("%.4f", var(phenotypes))
+            + "  (" + format("%.0f", elapsed) + "s elapsed, "
+            + format("%.0f", remaining_secs) + "s remaining)\n");
+    }
+}
+
+END_TICK late() {
+    sim.treeSeqOutput(outfile + ".trees");
+    sim.simulationFinished();
+}

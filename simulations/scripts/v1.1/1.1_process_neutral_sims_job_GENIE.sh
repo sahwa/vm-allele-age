@@ -13,28 +13,15 @@ VERSION=1.1
 DATA=/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v${VERSION}
 
 VCF=${DATA}/${VERSION}_neutral_out.vcf
-
-plink2 --vcf ${VCF} \
-	--make-bed \
-	--max-alleles 2 \
-	--min-alleles 2 \
-	--out ${DATA}/${VERSION}_neutral_out
-
-
 GENIE=/exafs1/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/programs/GENIE/build/GENIE
+
+sed '1iFID\tIID\tPHENO' ${DATA}/1.1_phenotypes.txt > ${DATA}/1.1_phenotypes.GENIE.txt
 
 ${GENIE} \
 	--genotype ${DATA}/${VERSION}_neutral_out \
 	--phenotype ${DATA}/1.1_phenotypes.GENIE.txt \
 	--annot ${DATA}/1.1_annotations_age_bins.txt \
 	--output ${DATA}/1.1_neutral_out_GENIE \
-	--model G
+	--model G \
+	--verbose 1 
 
-### testing using just one bin ###
-awk '{print 1}' ${DATA}/${VERSION}_neutral_out.bim > ${DATA}/single_annot.txt
-${GENIE} --genotype ${DATA}/${VERSION}_neutral_out \
-         --phenotype ${DATA}/1.1_phenotypes.GENIE.txt \
-         --annot ${DATA}/single_annot.txt \
-         --output ${DATA}/1.1_test_single \
-         --model G
-		 

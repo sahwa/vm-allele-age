@@ -5,10 +5,12 @@ files -> GENIE annotation matrix.
 
 For a NEUTRAL trait simulation (single population, mutation-drift equilibrium).
 """
+# %
 
 import os
 import subprocess
 from pathlib import Path
+import sys
 
 import msprime
 import numpy as np
@@ -19,13 +21,20 @@ import tskit
 # =================================================================
 # 0. Parameters
 # =================================================================
+
+# %
+
+REP = int(sys.argv[1])
+
 SIM_NE = 100000
 RNG_SEED = 42
 
-seeds = np.random.SeedSequence(RNG_SEED).spawn(3)
-rng_beta = np.random.default_rng(seeds[0])
-rng_sample = np.random.default_rng(seeds[1])
-rng_noise = np.random.default_rng(seeds[2])
+ss = np.random.SeedSequence([RNG_SEED, REP])
+seed_mutations, seed_beta, seed_sample, seed_noise = ss.spawn(4)
+
+rng_beta = np.random.default_rng(seed_beta)
+rng_sample = np.random.default_rng(seed_sample)
+rng_noise = np.random.default_rng(seed_noise)
 
 RECOMBINATION_RATE = 1e-8   # must match initializeRecombinationRate() in the .slim script
 
@@ -37,16 +46,19 @@ SIM_PATH = Path(
 )
 SIM_VERSION = "1.1"
 
+SIM_PATH_REP = SIM_PATH / f"rep{REP}"
+SIM_PATH_REP.mkdir(exist_ok=True)
+
 N_SAMPLE_TARGET = 50000      # diploids to sample for the GREML/GENIE analysis
 H2 = 0.5
 SIGMA_BETA = 1.0
 
 BINS = [0, 1e2, 1e3, 1e4, 5e4, 1e5, 2e5, 5e5, np.inf]
 
-TREE_FILE = SIM_PATH / f"{SIM_VERSION}_neutral_trait.n_100000.trees"
-MUT_TREE_FILE = SIM_PATH / f"{SIM_VERSION}_neutral_out.recap.mut.trees"
-VCF_FILE = SIM_PATH / f"{SIM_VERSION}_neutral_out.vcf"
-GENOME_PREFIX = SIM_PATH / f"{SIM_VERSION}_neutral_out"
+TREE_FILE = SIM_PATH / f"{SIM_VERSION}_neutral_trait.n_100000.trees"  # shared, not per-rep
+MUT_TREE_FILE = SIM_PATH_REP / f"{SIM_VERSION}_neutral_out.recap.mut.trees"
+VCF_FILE = SIM_PATH_REP / f"{SIM_VERSION}_neutral_out.vcf"
+GENOME_PREFIX = SIM_PATH_REP / f"{SIM_VERSION}_neutral_out"
 
 # =================================================================
 # 1. Load the SLiM tree sequence
@@ -61,22 +73,34 @@ GENOME_PREFIX = SIM_PATH / f"{SIM_VERSION}_neutral_out"
 # print(f"Loaded: {ts.num_samples} samples, {ts.num_trees} trees, "
 #       f"{n_multiroot} not yet coalesced", flush=True)
 
+# total_span = 0
+# weighted_tmrca = 0
+# for tree in ts.trees():
+#     root_time = tree.time(tree.root) if tree.num_roots == 1 else None
+#     if root_time is not None:
+#         weighted_tmrca += root_time * tree.span
+#         total_span += tree.span
+
+# mean_tmrca = weighted_tmrca / total_span
+# print(f"Mean TMRCA: {mean_tmrca:.0f} (expect ~4*Ne = {4*SIM_NE} under neutrality)")
+
 # =================================================================
 # 2. Recapitate (complete the ancient history with the msprime coalescent)
 #    ancestral_Ne must match the SLiM population size.
 # =================================================================
-# print("Recapitating (this is the slow step)...", flush=True)
-# rts = pyslim.recapitate(
-#     ts,
-#     recombination_rate=RECOMBINATION_RATE,
-#     ancestral_Ne=SIM_NE,
-#     random_seed=RNG_SEED,
-# )
 
-# n_multiroot_after = sum(1 for t in rts.trees() if t.num_roots > 1)
-# print(f"After recapitation: {n_multiroot_after} not yet coalesced (should be 0)",
-#       flush=True)
-# assert n_multiroot_after == 0, "Recapitation incomplete - check ancestral_Ne"
+RTS_FILE = SIM_PATH / f"{SIM_VERSION}_neutral_trait.n_100000.recapitated.trees"
+
+if not RTS_FILE.exists():
+    ts = tskit.load(TREE_FILE)
+    rts = pyslim.recapitate(ts, recombination_rate=RECOMBINATION_RATE,
+                            ancestral_Ne=SIM_NE, random_seed=RNG_SEED)
+    rts.dump(RTS_FILE)
+    n_multiroot_after = sum(1 for t in rts.trees() if t.num_roots > 1)
+    print(f"After recapitation: {n_multiroot_after} not yet coalesced (should be 0)", flush=True)
+    assert n_multiroot_after == 0, "Recapitation incomplete - check ancestral_Ne"
+else:
+    rts = tskit.load(RTS_FILE)
 
 # =================================================================
 # 3. Overlay neutral QTL mutations
@@ -86,16 +110,16 @@ GENOME_PREFIX = SIM_PATH / f"{SIM_VERSION}_neutral_out"
 #    targets. JC69 gives real A/C/G/T alleles, which plink and later dating
 #    tools need.
 # =================================================================
-# print("Overlaying mutations...", flush=True)
-# mts = msprime.sim_mutations(
-#     rts,
-#     rate=MU * PI_TARGET,
-#     random_seed=RNG_SEED,
-#     model=msprime.JC69(),
-#     keep=True,
-# )
-# print(f"After mutation overlay: {mts.num_sites} sites, "
-#       f"{mts.num_mutations} mutations", flush=True)
+
+print("Overlaying mutations...", flush=True)
+mts = msprime.sim_mutations(
+    rts, rate=MU * PI_TARGET,
+    random_seed=seed_mutations.generate_state(1)[0],  # SeedSequence -> int
+    model=msprime.JC69(), keep=True,
+)
+
+print(f"After mutation overlay: {mts.num_sites} sites, "
+      f"{mts.num_mutations} mutations", flush=True)
 
 # =================================================================
 # 4. Strip multiallelic sites directly from mts.
@@ -103,19 +127,19 @@ GENOME_PREFIX = SIM_PATH / f"{SIM_VERSION}_neutral_out"
 #    the VCF write, and the plink/GENIE outputs are automatically in
 #    lockstep - no separate masking or post-hoc row-matching needed.
 # =================================================================
-# multiallelic_site_ids = np.array(
-#     [site.id for site in mts.sites() if len(site.mutations) > 1]
-# )
-# print(f"Removing {len(multiallelic_site_ids)} multiallelic sites "
-#       f"out of {mts.num_sites}", flush=True)
+multiallelic_site_ids = np.array(
+    [site.id for site in mts.sites() if len(site.mutations) > 1]
+)
+print(f"Removing {len(multiallelic_site_ids)} multiallelic sites "
+      f"out of {mts.num_sites}", flush=True)
 
-# tables = mts.dump_tables()
-# tables.delete_sites(multiallelic_site_ids)
-# tables.sort()
-# mts = tables.tree_sequence()
-# print(f"mts now has {mts.num_sites} biallelic sites", flush=True)
+tables = mts.dump_tables()
+tables.delete_sites(multiallelic_site_ids)
+tables.sort()
+mts = tables.tree_sequence()
+print(f"mts now has {mts.num_sites} biallelic sites", flush=True)
 
-# mts.dump(MUT_TREE_FILE)
+mts.dump(MUT_TREE_FILE)
 
 # =================================================================
 # 5. Extract true ages, frequencies, positions
@@ -240,7 +264,7 @@ for lo, hi in zip(BINS[:-1], BINS[1:]):
     })
 
 pd.DataFrame(bin_rows).to_csv(
-    SIM_PATH / f"{SIM_VERSION}_bin_truth.csv", index=False)
+    SIM_PATH_REP / f"{SIM_VERSION}_bin_truth.csv", index=False)
 
 # =================================================================
 # 10. Write VCF for the sampled individuals
@@ -292,8 +316,8 @@ for lo, hi in zip(BINS[:-1], BINS[1:]):
     variant_ids = np.where(m)[0]
 
     label = f"{lo:.0f}_{hi:.0f}" if not np.isinf(hi) else f"{lo:.0f}_inf"
-    var_file = SIM_PATH / f"{SIM_VERSION}_bin_{label}_vars.txt"
-    prefix = SIM_PATH / f"{SIM_VERSION}_bin_{label}"
+    var_file = SIM_PATH_REP / f"{SIM_VERSION}_bin_{label}_vars.txt"
+    prefix = SIM_PATH_REP / f"{SIM_VERSION}_bin_{label}"
 
     np.savetxt(var_file, variant_ids, fmt="%d")
 
@@ -312,7 +336,7 @@ for lo, hi in zip(BINS[:-1], BINS[1:]):
 annotations = pd.get_dummies(bins_assigned_filtered, prefix="bin", prefix_sep="_").astype(int)
 
 annotations.to_csv(
-    SIM_PATH / f"{SIM_VERSION}_annotations_age_bins.txt",
+    SIM_PATH_REP / f"{SIM_VERSION}_annotations_age_bins.txt",
     sep=" ", index=False, header=False,
 )
 
@@ -321,7 +345,7 @@ legend = pd.DataFrame({
     "age_bin": bin_labels,
 })
 legend.to_csv(
-    SIM_PATH / f"{SIM_VERSION}_annotations_legend.txt",
+    SIM_PATH_REP / f"{SIM_VERSION}_annotations_legend.txt",
     sep=" ", index=False,
 )
 
@@ -336,21 +360,20 @@ pd.DataFrame({
     "bin": bins_assigned,
     "freq": freqs,
     "beta": beta,
-}).to_csv(SIM_PATH / f"{SIM_VERSION}_variant_info.csv", index=False)
+}).to_csv(SIM_PATH_REP / f"{SIM_VERSION}_variant_info.csv", index=False)
 
 # FID/IID matching the VCF sample names, so GCTA can join on them.
-pd.DataFrame({
-    "FID": 0,
-    "IID": indv_names,
-    "y": y,
-}).to_csv(SIM_PATH / f"{SIM_VERSION}_phenotypes.txt",
-          sep="\t", index=False, header=False)
+pd.DataFrame({"FID": 0, "IID": indv_names, "y": y}).to_csv(
+    SIM_PATH_REP / f"{SIM_VERSION}_phenotypes.GENIE.txt",
+    sep="\t", index=False, header=["FID", "IID", "PHENO"]
+)
 
 pd.DataFrame({
     "sample_idx": sample_idx,
     "iid": indv_names,
     "y": y,
     "g": g,
-}).to_csv(SIM_PATH / f"{SIM_VERSION}_phenotypes.csv", index=False)
+}).to_csv(SIM_PATH_REP / f"{SIM_VERSION}_phenotypes.csv", index=False)
 
-print(f"\nWrote outputs to {SIM_PATH}", flush=True)
+
+print(f"\nWrote outputs to {SIM_PATH_REP}", flush=True)
