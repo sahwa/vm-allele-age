@@ -19,6 +19,6 @@ slim \
     -d MU=1.44e-8 \
     -d PI_TARGET=0.01 \
     -d V_S=${V_S} \
-    -d END_TICK=50000 \
+    -d END_TICK=150000 \
     -d "outfile='${OUTFILE}'" \
     ${SCRIPTS}/2.0_stabilising_selection.slim

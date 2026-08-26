@@ -86,11 +86,10 @@ extract_sim_results = function(REP) {
     )]
 
     comparison[, bin_label := ifelse(
-            is.infinite(bin_hi),
-            paste0(bin_lo, "+"),
-            paste0(bin_lo, "-", bin_hi)
-        )
-    ]
+        is.infinite(bin_hi),
+        paste0(scales::comma(bin_lo), "+"),
+        paste0(scales::comma(bin_lo), "–", scales::comma(bin_hi))
+    )]
 
     list(
         binned_res = comparison,
@@ -108,6 +107,35 @@ all_sim_bin_h2 = rbindlist(purrr::map(all_sim_reps, function(x) {
         }
     )
 )
+
+all_sim_bin_h2[, bin_label := factor(
+    bin_label,
+    levels = c(
+        "0–100",
+        "100–1,000",
+        "1,000–10,000",
+        "10,000–50,000",
+        "50,000–100,000",
+        "100,000–200,000",
+        "200,000–500,000",
+        "500,000+"
+        )
+    )
+]
+
+all_sim_bin_h2[, bias := est_share - true_share]
+
+bin_summary = all_sim_bin_h2[, .(
+  mean_bias = mean(bias),
+  se_bias   = sd(bias) / sqrt(.N),
+  mad       = mean(abs(bias)),
+  rmse      = sqrt(mean(bias^2)),
+  n_reps    = .N
+), by = bin_label]
+
+
+bin_summary[, z := mean_bias / se_bias]
+
 
 p1 = all_sim_bin_h2 %>%
     mutate(bin_label = factor(bin_label, levels = unique(gtools::mixedsort(all_sim_bin_h2$bin_label)))) %>%
@@ -131,6 +159,17 @@ p2 = all_sim_h2 %>%
 
 ggsave(file.path(DATA, "genie_vs_truth.repeated.h2.png"), p2, width = 7, height = 6, dpi = 200)
 
+p3 = bin_summary %>%
+    mutate(bin_label = factor(bin_label, levels = unique(gtools::mixedsort(all_sim_bin_h2$bin_label)))) %>%
+    ggplot(aes(x=bin_label, y=mean_bias)) +
+    geom_point() +
+    geom_errorbar(aes(ymin=mean_bias - se_bias, ymax = mean_bias + se_bias)) +
+    geom_hline(yintercept = 0, colour = 'red', linetype = 'dashed') +
+    theme_light() +
+    theme(axis.text.x = element_text(size=8, angle = 45))
+
+ggsave(file.path(DATA, "bias.repeated.h2.png"), p3, width = 7, height = 6, dpi = 200)
+
 # ---------------------------------------------------------------
 # 6. Plot: true share vs estimated share, with error bars
 # ---------------------------------------------------------------
@@ -140,7 +179,7 @@ p <- ggplot(comparison, aes(x = true_share, y = est_share)) +
   geom_errorbar(
     aes(ymin = est_share - SE / total_h2,
         ymax = est_share + SE / total_h2),
-    width = 0, color = "#c1440e"
+    width = 0, color = "#ca5422"
   ) +
   geom_point(size = 3, color = "#c1440e") +
   geom_text(aes(label = bin_label), hjust = -0.15, vjust = -0.3,
