@@ -14,7 +14,6 @@ SCRIPTS=/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/scri
 
 GENIE=/exafs1/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/programs/GENIE/build/GENIE
 
-
 python ${SCRIPTS}/1.1_process_neutral_sims.py ${SLURM_ARRAY_TASK_ID}
 
 ${GENIE} \

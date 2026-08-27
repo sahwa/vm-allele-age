@@ -286,7 +286,7 @@ with open(VCF_FILE, "wt") as f:
 #     must be rebuilt from this .bim, matched by position, not
 #     reused from the pre-filter arrays.
 # =================================================================
-cmd = (f"plink2 --vcf {VCF_FILE} --maf 0.0000001 "
+cmd = (f"plink2 --vcf {VCF_FILE} --maf 0.0000001 --set-all-var-ids '@:#:$r:$a' "
        f"--make-bed --out {GENOME_PREFIX}")
 subprocess.run(cmd, shell=True, check=True)
 
@@ -303,29 +303,29 @@ bins_assigned_filtered = pd.cut(ages_filtered, bins=BINS,
 
 
 # =================================================================
-# 12. Per-bin plink files (for GCTA / GRM-based diagnostics)
-#     tskit writes site.id into the VCF ID column, and site.id is the
-#     0-based index into the variant enumeration, so no offset is needed
-#     when extracting.
+# 12. Per-bin plink files, built from the MAF-filtered genome-wide
+#     .bed - so variant sets and IDs stay consistent with GENOME_PREFIX
+#     and with snp_info.csv (all keyed by chr:pos:ref:alt).
 # =================================================================
-for lo, hi in zip(BINS[:-1], BINS[1:]):
-    m = (ages >= lo) & (ages < hi)
-    if m.sum() == 0:
+bins_assigned_filtered = pd.Series(bins_assigned_filtered, index=bim["snpid"].values)
+
+for label_str in bin_labels:
+    snp_ids_in_bin = bins_assigned_filtered[bins_assigned_filtered == label_str].index
+
+    if len(snp_ids_in_bin) == 0:
         continue
 
-    variant_ids = np.where(m)[0]
+    var_file = SIM_PATH_REP / f"{SIM_VERSION}_bin_{label_str}_vars.txt"
+    prefix = SIM_PATH_REP / f"{SIM_VERSION}_bin_{label_str}"
 
-    label = f"{lo:.0f}_{hi:.0f}" if not np.isinf(hi) else f"{lo:.0f}_inf"
-    var_file = SIM_PATH_REP / f"{SIM_VERSION}_bin_{label}_vars.txt"
-    prefix = SIM_PATH_REP / f"{SIM_VERSION}_bin_{label}"
+    pd.Series(snp_ids_in_bin).to_csv(var_file, index=False, header=False)
 
-    np.savetxt(var_file, variant_ids, fmt="%d")
-
-    cmd = (f"plink2 --vcf {VCF_FILE} --extract {var_file} "
+    cmd = (f"plink2 --bfile {GENOME_PREFIX} --extract {var_file} "
            f"--make-bed --out {prefix}")
     subprocess.run(cmd, shell=True, check=True)
 
-    print(f"Wrote {prefix}.bed/bim/fam with {m.sum()} variants", flush=True)
+    print(f"Wrote {prefix}.bed/bim/fam with {len(snp_ids_in_bin)} variants",
+          flush=True)
     os.remove(var_file)
 
 # =================================================================
@@ -374,6 +374,37 @@ pd.DataFrame({
     "y": y,
     "g": g,
 }).to_csv(SIM_PATH_REP / f"{SIM_VERSION}_phenotypes.csv", index=False)
+
+
+bim = pd.read_csv(f"{GENOME_PREFIX}.bim", sep="\t", header=None,
+                   names=["chr", "snpid", "cm", "pos", "a1", "a2"])
+
+# reindex ages/freqs to match, by position (as you're already doing)
+pos_to_age = pd.Series(ages, index=positions)
+ages_filtered = pos_to_age.loc[bim["pos"].values].to_numpy()
+
+snp_info = pd.DataFrame({"snp_id": bim["snpid"].values})  # <- use plink's own IDs
+
+pos_to_freq = pd.Series(freqs, index=positions)
+freqs_filtered = pos_to_freq.loc[bim["pos"].values].to_numpy()
+p = freqs_filtered
+
+bins_assigned_clean = pd.cut(ages_filtered, bins=BINS, labels=bin_labels, right=False)
+
+annotations = pd.get_dummies(bins_assigned_clean, prefix="bin", prefix_sep="_").astype(int)
+annotations.index = snp_info.index  # ensure positional alignment, not label alignment
+
+for col in annotations.columns:
+    snp_info[col] = annotations[col].replace(0, np.nan).values  # .values forces positional assignment
+
+snp_info["w_unstd"] = 1.0
+snp_info["w_std"] = 1.0 / np.sqrt(2 * p * (1 - p))
+
+snp_info["c0"] = -2 * p       # A1A1: -2p
+snp_info["c1"] = 1 - 2 * p    # A1A2: 1-2p  
+snp_info["c2"] = 2 - 2 * p    # A2A2: 2-2p
+
+snp_info.to_csv(SIM_PATH_REP / f"{SIM_VERSION}_snp_info_mph.csv", index=False)
 
 
 print(f"\nWrote outputs to {SIM_PATH_REP}", flush=True)
