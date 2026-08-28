@@ -22,3 +22,4 @@ slim \
     -d END_TICK=150000 \
     -d "outfile='${OUTFILE}'" \
     ${SCRIPTS}/2.0_stabilising_selection.slim
+

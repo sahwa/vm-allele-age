@@ -13,89 +13,39 @@ DATA <- "/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/dat
 extract_sim_results = function(REP) {
 
     TRUTH <- fread(file.path(DATA, f("rep{REP}"), "1.1_bin_truth.csv"))
-    ESTIMATED <- file.path(DATA, f("rep{REP}"), "1.1_neutral_out_GENIE.pruned")
 
-    log_lines <- readLines(ESTIMATED)
+    ESTIMATED_STD <- fread(file.path(DATA, f("rep{REP}"), "1.1_MPH_std.mq.vc.csv"))
+    ESTIMATED_STD[, vc_name := sub(".*_bin_([^_]+)_MPH.*", "\\1", vc_name)]
+    ESTIMATED_STD = ESTIMATED_STD[, .(bin = vc_name, var, pve, seP)]
+    ESTIMATED_STD_TOTAL = ESTIMATED_STD[bin != "err", sum(pve)]
+    ESTIMATED_STD[, est_share_std := pve / ESTIMATED_STD_TOTAL]
 
-    # ---------------------------------------------------------------
-    # 2. Parse per-bin h2_g and SE
-    #    Lines look like: "h2_g[3] : 0.0746268 SE : 0.00686682"
-    #    We want the FIRST block of these (not the duplicated
-    #    "overlapping def" block later in the file), so take the
-    #    first n_bins matches only.
-    # ---------------------------------------------------------------
-    h2_pattern <- "^h2_g\\[(\\d+)\\]\\s*:\\s*(-?[0-9.eE+-]+)\\s*SE\\s*:\\s*([0-9.eE+-]+)"
+    ESTIMATED_UNSTD <- fread(file.path(DATA, f("rep{REP}"), "1.1_MPH_unstd.mq.vc.csv"))
+    ESTIMATED_UNSTD[, vc_name := sub(".*_bin_([^_]+)_MPH.*", "\\1", vc_name)]
+    ESTIMATED_UNSTD = ESTIMATED_UNSTD[, .(bin = vc_name, var, pve, seP)]
+    ESTIMATED_UNSTD_TOTAL = ESTIMATED_UNSTD[bin != "err", sum(pve)]
+    ESTIMATED_UNSTD[, est_share_unstd := pve / ESTIMATED_UNSTD_TOTAL]
 
-    h2_lines <- log_lines[str_detect(log_lines, h2_pattern)]
-    h2_matches <- str_match(h2_lines, h2_pattern)
-
-    n_bins <- nrow(TRUTH)
-
-    parsed <- unique(data.table(
-        bin   = as.integer(h2_matches[, 2]),
-        h2_g  = as.numeric(h2_matches[, 3]),
-        SE    = as.numeric(h2_matches[, 4])
-    ))
-
-    # Keep only the first block (bins 0..n_bins-1 appear twice in the log,
-    # once under "Heritabilities" and once under "overlapping def")
-    ESTIMATES <- parsed[1:n_bins]
-
-    # ---------------------------------------------------------------
-    # 3. Parse total h2 and its SE
-    # ---------------------------------------------------------------
-    total_line <- log_lines[str_detect(log_lines, "^Total h2\\s*:")][1]
-    total_match <- str_match(total_line,
-    "^Total h2\\s*:\\s*(-?[0-9.eE+-]+)\\s*SE\\s*:\\s*([0-9.eE+-]+)")
-
-    total_h2 <- as.numeric(total_match[2])
-    total_h2_SE <- as.numeric(total_match[3])
-
-    cat(sprintf("Total h2 (GENIE): %.4f (SE %.4f)\n", total_h2, total_h2_SE))
-
-    # ---------------------------------------------------------------
-    # 4. Parse phenotypic variance from the sample, needed to convert
-    #    GENIE's standardised-scale h2_g back to raw trait units.
-    #    (Use the value you have from the pipeline; recompute here if
-    #    you'd rather read it directly from the phenotype file.)
-    # ---------------------------------------------------------------
-    pheno <- fread(file.path(DATA, "1.1_phenotypes.csv"))
-    V_P <- var(pheno$y)
+    PHENO <- fread(file.path(DATA, f("rep{REP}"), "1.1_phenotypes.csv"))
+    V_P <- var(PHENO$y)
     cat(sprintf("Sample phenotypic variance (V_P): %.2f\n", V_P))
 
-    # ---------------------------------------------------------------
-    # 5. Join truth and estimates, bin-for-bin
-    #    TRUTH is ordered by bin_lo ascending, which matches GENIE's
-    #    bin 0..7 ordering (bins were built from the same BINS vector
-    #    in the same order in the Python pipeline).
-    # ---------------------------------------------------------------
-    TRUTH[, bin := 0:(.N - 1)]
+    TRUTH[, bin := str_c(bin_lo, "-", bin_hi)]
+    bin_order <- c("0-100", "100-1000", "1000-10000", "10000-50000", 
+               "50000-100000", "100000-200000", "200000-500000", "500000-inf")
 
-    comparison <- merge(TRUTH, ESTIMATES, by = "bin")
+    bin_order <- c("0-100", "100-1000", "1000-10000", "10000-50000", 
+                "50000-100000", "100000-200000", "200000-500000", "500000-inf")
 
-    comparison[, `:=`(
-    V_estimated  = h2_g * V_P,
-    SE_raw       = SE * V_P,
-    true_share   = V_observed / sum(TRUTH$V_observed),
-    est_share    = h2_g / total_h2
-    )]
-
-    comparison[, `:=`(
-    ratio = V_estimated / V_observed,
-    z     = (V_estimated - V_observed) / SE_raw
-    )]
-
-    comparison[, bin_label := ifelse(
-        is.infinite(bin_hi),
-        paste0(scales::comma(bin_lo), "+"),
-        paste0(scales::comma(bin_lo), "–", scales::comma(bin_hi))
-    )]
-
-    list(
-        binned_res = comparison,
-        total_h2 = total_h2,
-        total_h2_SE = total_h2_SE
+    ALL_EST <- merge(
+        ESTIMATED_STD[bin %in% bin_order, .(bin, est_share_std)],
+        ESTIMATED_UNSTD[bin %in% bin_order, .(bin, est_share_unstd)],
+        by = "bin"
     )
+
+    comparison <- merge(TRUTH, ALL_EST, by = "bin")
+    comparison[, true_share := V_observed / sum(TRUTH$V_observed)]
+    comparison[, REP := REP]
 }
 
 all_sim_reps = purrr::map(1:N_REPS, extract_sim_results)
@@ -146,7 +96,7 @@ p1 = all_sim_bin_h2 %>%
     theme_light() +
     viridis::scale_colour_viridis(option = "turbo", discrete=T)
 
-ggsave(file.path(DATA, "genie_vs_truth.repeated.pruned.png"), p1, width = 7, height = 6, dpi = 200)
+ggsave(file.path(DATA, "genie_vs_truth.repeated.png"), p1, width = 7, height = 6, dpi = 200)
 
 p2 = all_sim_h2 %>% 
     rename(h2 = V1, h2_se = V2) %>% 
@@ -157,7 +107,7 @@ p2 = all_sim_h2 %>%
     geom_hline(yintercept = 0.5, colour = 'red', linetype='dashed') + 
     ylim(0, 1)
 
-ggsave(file.path(DATA, "genie_vs_truth.repeated.h2.pruned.png"), p2, width = 7, height = 6, dpi = 200)
+ggsave(file.path(DATA, "genie_vs_truth.repeated.h2.png"), p2, width = 7, height = 6, dpi = 200)
 
 p3 = bin_summary %>%
     mutate(bin_label = factor(bin_label, levels = unique(gtools::mixedsort(all_sim_bin_h2$bin_label)))) %>%
@@ -168,7 +118,7 @@ p3 = bin_summary %>%
     theme_light() +
     theme(axis.text.x = element_text(size=8, angle = 45))
 
-ggsave(file.path(DATA, "bias.repeated.h2.pruned.png"), p3, width = 7, height = 6, dpi = 200)
+ggsave(file.path(DATA, "bias.repeated.h2.png"), p3, width = 7, height = 6, dpi = 200)
 
 # ---------------------------------------------------------------
 # 6. Plot: true share vs estimated share, with error bars

@@ -19,10 +19,10 @@ PROGRAMS=/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/pro
 GENIE=${PROGRAMS}/GENIE/build/GENIE
 MPH=${PROGRAMS}/mph/mph
 
-micromamba run -n slim python ${SCRIPTS}/1.1_process_neutral_sims.py ${REP}
+# micromamba run -n slim python ${SCRIPTS}/1.1_process_neutral_sims.py ${REP}
 
 for bin in $(ls ${DATA}/rep${REP}/1.1_bin_*-*.bed | sed 's/\.bed$//'); do
-    stem="$(basename ${bin})"
+    stem="$(basename ${bin})"577718
 
     micromamba run -n MPH ${MPH} --bfile ${bin} --make_grm \
         --snp_info_file ${DATA}/rep${REP}/1.1_snp_info_mph.csv \
@@ -39,19 +39,33 @@ for bin in $(ls ${DATA}/rep${REP}/1.1_bin_*-*.bed | sed 's/\.bed$//'); do
         --num_threads 6
 done
 
-# ${MPH} \
-# 	--bfile ${DATA}/rep${REP}/1.1_bin_${bin}  \
-# 	--make_grm \
-# 	--snp_info_file snp_info.csv \
-# 	--snp_weight_name w_std
-# 	--snp_genotype_coding c0,c1,c2 \
-# 	--output_file ${DATA}/rep${REP}/1.1_bin_${bin}_MPH_standardised
 
+# #### then make the phenotype file ####
+awk -F',' 'NR>1 {print $2","$3}' ${DATA}/rep${REP}/1.1_phenotypes.csv \
+    | sed '1i id,PHENO' > ${DATA}/rep${REP}/1.1_MPH_pheno.txt
 
-# ${MPH} \
-# 	--grm_list list.txt \
-# 	--phenotype_file \
-# 	--trait
-# 	--reml
-# 	--heritability 0.5 \
-# 	--seed 42
+#### run multi-component REML for standardised GRMs ####
+
+ls ${DATA}/rep${REP}/*_MPH_std*.grm.bin | sed 's/\.grm\.bin$//' > ${DATA}/rep${REP}/1.1_MPH_std.grm.list
+micromamba run -n MPH ${MPH} \
+    --grm_list ${DATA}/rep${REP}/1.1_MPH_std.grm.list \
+    --phenotype_file ${DATA}/rep${REP}/1.1_MPH_pheno.txt \
+    --trait PHENO \
+    --reml \
+    --heritability 0.5 \
+    --seed 42 \
+    --output_file ${DATA}/rep${REP}/1.1_MPH_std \
+    --num_threads 6 
+
+#### run multi-component REML for unstandardised GRMs ####
+ls ${DATA}/rep${REP}/*_MPH_unstd*.grm.bin | sed 's/\.grm\.bin$//' > ${DATA}/rep${REP}/1.1_MPH_unstd.grm.list
+micromamba run -n MPH ${MPH} \
+    --grm_list ${DATA}/rep${REP}/1.1_MPH_unstd.grm.list \
+    --phenotype_file ${DATA}/rep${REP}/1.1_MPH_pheno.txt \
+    --trait PHENO \
+    --reml \
+    --heritability 0.5 \
+    --seed 42 \
+    --output_file ${DATA}/rep${REP}/1.1_MPH_unstd \
+    --num_threads 6
+    
