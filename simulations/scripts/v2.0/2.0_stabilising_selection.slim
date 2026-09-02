@@ -7,7 +7,6 @@
 //      order of 4-5*Ne generations. Reducing Ne to keep runtime tractable.
 
 initialize() {
-    defineConstant("N", 10000);
     defineConstant("L", 1e8);
     defineConstant("start_time", clock());
     initializeTreeSeq();
@@ -26,7 +25,7 @@ fitnessEffect() {
     return exp(-(phenotype^2) / (2 * V_S));
 }
 
-1 early() { sim.addSubpop("p1", N); }
+1 early() { sim.addSubpop("p1", NE); }
 
 1: late() {
     if (community.tick % 1000 == 0) {

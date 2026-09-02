@@ -4,22 +4,26 @@
 #SBATCH -o 2.0_stabilising_selection.%A_%a.out
 #SBATCH -e 2.0_stabilising_selection.%A_%a.err
 #SBATCH -p long
-#SBATCH -c 2
-#SBATCH --mem=32G
+#SBATCH -c 4
+#SBATCH --mem=64G
 #SBATCH -a 1-3
 
 SCRIPTS=/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/scripts/v2.0
 DATA=/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v2.0
 
-V_S=$(awk "NR == ${SLURM_ARRAY_TASK_ID}" ${SCRIPTS}/2.0_stabilising_selection_VS_sweep.txt)
+# V_S=$(awk "NR == ${SLURM_ARRAY_TASK_ID}" ${SCRIPTS}/2.0_stabilising_selection_VS_sweep.txt)
+NE=$(awk "NR == ${SLURM_ARRAY_TASK_ID}" ${SCRIPTS}/2.0_stabilising_selection_NE_sweep.txt)
+V_S=5
 
-OUTFILE=${DATA}/2.0_stabilising_selection_VS_${V_S}
+echo "Running Slim using ${NE} individuals and setting V_S as ${V_S}"
 
-slim \
+OUTFILE=${DATA}/2.0_stabilising_selection_VS_${V_S}_NE_${NE}
+
+stdbuf -oL slim \
     -d MU=1.44e-8 \
     -d PI_TARGET=0.01 \
     -d V_S=${V_S} \
+    -d NE=${NE} \
     -d END_TICK=150000 \
     -d "outfile='${OUTFILE}'" \
     ${SCRIPTS}/2.0_stabilising_selection.slim
-

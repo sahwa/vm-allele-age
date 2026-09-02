@@ -24,10 +24,8 @@ import scipy
 # 0. Parameters
 # =================================================================
 
-# %
-
-# REP = int(sys.argv[1])
-REP = 1
+REP = int(sys.argv[1])
+# REP = 1
 
 SIM_NE = 20000
 RNG_SEED = 42
@@ -45,11 +43,14 @@ MU = 1.44e-8                # per base per generation mutation rate
 PI_TARGET = 0.01             # fraction of the genome that is mutational target
 
 V_S = 5
+N_E = 20000
+PARAMS = f"VS_{V_S}_NE_{N_E}"
 
 SIM_PATH = Path(
     "/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v2.0"
 )
 SIM_VERSION = "2.0"
+SELECTION_TYPE = "stabilising_selection"
 
 SIM_PATH_REP = SIM_PATH / f"rep{REP}"
 SIM_PATH_REP.mkdir(exist_ok=True)
@@ -58,12 +59,12 @@ N_SAMPLE_TARGET = 50000      # diploids to sample for the GREML/GENIE analysis
 H2 = 0.5
 SIGMA_BETA = 1.0
 
-BINS = [0, 1e2, 1e3, 1e4, 5e4, 1e5, 2e5, 5e5, np.inf]
+BINS = [0, 100, 1000, 10000, 50000, np.inf]  
 
-TREE_FILE = SIM_PATH / f"{SIM_VERSION}_stabilising_selection_VS_{V_S}.trees"  # shared, not per-rep
-# MUT_TREE_FILE = SIM_PATH_REP / f"{SIM_VERSION}_neutral_out.recap.mut.trees"
-# VCF_FILE = SIM_PATH_REP / f"{SIM_VERSION}_neutral_out.vcf"
-# GENOME_PREFIX = SIM_PATH_REP / f"{SIM_VERSION}_neutral_out"
+TREE_FILE = SIM_PATH / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}.trees"  # shared, not per-rep
+MUT_TREE_FILE = SIM_PATH_REP / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}_out.recap.mut.trees"
+VCF_FILE = SIM_PATH_REP / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}_out.vcf"
+GENOME_PREFIX = SIM_PATH_REP / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}.out"
 
 # =================================================================
 # 1. Load the SLiM tree sequence
@@ -88,7 +89,6 @@ for tree in ts.trees():
 
 mean_tmrca = weighted_tmrca / total_span
 print(f"Mean TMRCA: {mean_tmrca:.0f} (expect ~4*Ne = {4*SIM_NE} under neutrality)")
-
 
 # now is a good place to calculate the empirical Ne
 # we can do this based on the distribution of coalescence times
@@ -134,11 +134,15 @@ multiallelic_site_ids = np.array(
 print(f"Removing {len(multiallelic_site_ids)} multiallelic sites "
       f"out of {ts.num_sites}", flush=True)
 
-tables = ts.dump_tables()
-tables.delete_sites(multiallelic_site_ids)
-tables.sort()
-mts = tables.tree_sequence()
-print(f"mts now has {mts.num_sites} biallelic sites", flush=True)
+if len(multiallelic_site_ids) != 0:
+    tables = ts.dump_tables()
+    tables.delete_sites(multiallelic_site_ids)
+    tables.sort()
+    mts = tables.tree_sequence()
+    print(f"mts now has {mts.num_sites} biallelic sites", flush=True)
+else:
+    print("No multi-allelics to remove", flush=True)
+    mts = ts
 
 # mts.dump(MUT_TREE_FILE)
 
@@ -158,11 +162,11 @@ for var in ts.variants():
     freqs.append(var.genotypes.mean())
     positions.append(var.site.position)
 
-
 ages = np.array(ages)
 freqs = np.array(freqs)
 positions = np.array(positions)
 beta = np.array(beta)
+pheno = freqs * beta
 
 M = len(ages)
 print(f"Extracted {M} variants", flush=True)
@@ -182,6 +186,7 @@ SIGMA_BETA = 0.1 # we can empirically calculate the SIGMA - but we should use th
 
 
 V_A_empirical = np.sum(2 * freqs * (1-freqs) * beta**2)
+V_P = np.var(pheno)
 
 print(f"SD of extracted betas: {beta.std():.4f} (SLiM param: {0.1})")
 u_target = MU * PI_TARGET * ts.sequence_length # mutational target stays the same as before 
@@ -190,8 +195,14 @@ V_M_analytic_true = 2 * u_target * SIGMA_BETA**2
 
 PERSISTENCE_TIME = V_A_empirical / V_M_analytic_true
 
+S_BAR = SIGMA_BETA**2 / (2*V_S + V_P)
 
-S_BAR = SIGMA_BETA**2 / (2*V_S)
+V_P_true = np.sum(2 * freqs * (1 - freqs) * beta**2)  # = V_A_empirical, should match your earlier print
+print(f"V_P (= V_A_empirical): {V_P_true:.4g}")
+
+S_BAR = SIGMA_BETA**2 / (2 * (V_S + V_P_true))
+print(f"S_BAR corrected: {S_BAR:.6f}")
+print(f"Persistence 1/S_BAR: {1/S_BAR:.0f} generations")
 
 REGIME_PARAMETER = S_BAR * NE_empricial
 
@@ -216,7 +227,6 @@ print(f"V_A empirical / V_A neutral: {ratio_to_neutral:.3f}  (should be << 1.0 i
 print(f"Persistence time observed: {PERSISTENCE_TIME:.0f} generations")
 print(f"Persistence time 1/s̄ (MSB):  {1/S_BAR:.0f} generations")
 print(f"Persistence time 2Ne (neutral): {2*NE_empricial:.0f} generations")
-
 
 # # =================================================================
 # # 8. Build genetic values, then sample individuals
@@ -261,7 +271,7 @@ for i in range(len(BINS) - 1):
 
 bins_assigned = pd.cut(ages, bins=BINS, labels=bin_labels, right=False)
 
-print(f"\n{'Bin (gens)':<18}{'n':>7}{'observed':>12}{'predicted':>12}{'ratio':>9}")
+print(f"\n{'Bin (gens)':<18}{'n':>7}{'observed':>12}{'predicted':>12}")
 bin_rows = []
 for lo, hi in zip(BINS[:-1], BINS[1:]):
     m = (ages >= lo) & (ages < hi)
@@ -270,29 +280,16 @@ for lo, hi in zip(BINS[:-1], BINS[1:]):
     contribs = 2 * freqs[m] * (1 - freqs[m]) * beta[m]**2
     V_bin = contribs.sum()
 
-    # Integral of K(t) = exp(-t/2Ne) across the bin.
-    hi_term = 0.0 if np.isinf(hi) else np.exp(-hi / (2 * NE_empricial))
-    K_int = 2 * NE_empricial * (
-        np.exp(-lo * (1/(2*NE_empricial) + S_BAR)) - 
-        (0.0 if np.isinf(hi) else np.exp(-hi * (1/(2*NE_empricial) + S_BAR)))
-    )
-    V_pred = V_M_analytic_true * K_int
-
-    # Kish effective n: bin variance is dominated by a few large contributors,
-    # so the naive sqrt(n) error bar is far too tight.
-    n_eff = contribs.sum()**2 / (contribs**2).sum()
-
     label = f"{lo:.0f}+" if np.isinf(hi) else f"{lo:.0f}-{hi:.0f}"
-    print(f"{label:<18}{m.sum():>7}{V_bin:>12.4g}{V_pred:>12.4g}"
-          f"{V_bin / V_pred:>9.3f}")
+    print(f"{label:<18}{m.sum():>7}{V_bin:>12.4g}")
 
     bin_rows.append({
         "bin_lo": lo, "bin_hi": hi, "n_variants": int(m.sum()),
-        "n_eff": n_eff, "V_observed": V_bin, "V_predicted": V_pred,
+        "V_observed": V_bin, 
     })
 
 pd.DataFrame(bin_rows).to_csv(
-    SIM_PATH_REP / f"{SIM_VERSION}_bin_truth.csv", index=False)
+    SIM_PATH_REP / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}_bin_truth.csv", index=False)
 
 # =================================================================
 # 10. Write VCF for the sampled individuals
@@ -336,25 +333,25 @@ bins_assigned_filtered = pd.cut(ages_filtered, bins=BINS,
 #     0-based index into the variant enumeration, so no offset is needed
 #     when extracting.
 # =================================================================
-for lo, hi in zip(BINS[:-1], BINS[1:]):
-    m = (ages >= lo) & (ages < hi)
-    if m.sum() == 0:
-        continue
+# for lo, hi in zip(BINS[:-1], BINS[1:]):
+#     m = (ages >= lo) & (ages < hi)
+#     if m.sum() == 0:
+#         continue
 
-    variant_ids = np.where(m)[0]
+#     variant_ids = np.where(m)[0]
 
-    label = f"{lo:.0f}_{hi:.0f}" if not np.isinf(hi) else f"{lo:.0f}_inf"
-    var_file = SIM_PATH_REP / f"{SIM_VERSION}_bin_{label}_vars.txt"
-    prefix = SIM_PATH_REP / f"{SIM_VERSION}_bin_{label}"
+#     label = f"{lo:.0f}_{hi:.0f}" if not np.isinf(hi) else f"{lo:.0f}_inf"
+#     var_file = SIM_PATH_REP / f"{SIM_VERSION}_bin_{label}_vars.txt"
+#     prefix = SIM_PATH_REP / f"{SIM_VERSION}_bin_{label}"
 
-    np.savetxt(var_file, variant_ids, fmt="%d")
+#     np.savetxt(var_file, variant_ids, fmt="%d")
 
-    cmd = (f"plink2 --vcf {VCF_FILE} --extract {var_file} "
-           f"--make-bed --out {prefix}")
-    subprocess.run(cmd, shell=True, check=True)
+#     cmd = (f"plink2 --vcf {VCF_FILE} --extract {var_file} "
+#            f"--make-bed --out {prefix}")
+#     subprocess.run(cmd, shell=True, check=True)
 
-    print(f"Wrote {prefix}.bed/bim/fam with {m.sum()} variants", flush=True)
-    os.remove(var_file)
+#     print(f"Wrote {prefix}.bed/bim/fam with {m.sum()} variants", flush=True)
+#     os.remove(var_file)
 
 # =================================================================
 # 13. GENIE annotation matrix — built from the MAF-filtered .bim,
@@ -364,7 +361,7 @@ for lo, hi in zip(BINS[:-1], BINS[1:]):
 annotations = pd.get_dummies(bins_assigned_filtered, prefix="bin", prefix_sep="_").astype(int)
 
 annotations.to_csv(
-    SIM_PATH_REP / f"{SIM_VERSION}_annotations_age_bins.txt",
+    SIM_PATH_REP / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}_annotations_age_bins.txt",
     sep=" ", index=False, header=False,
 )
 
@@ -373,10 +370,9 @@ legend = pd.DataFrame({
     "age_bin": bin_labels,
 })
 legend.to_csv(
-    SIM_PATH_REP / f"{SIM_VERSION}_annotations_legend.txt",
+    SIM_PATH_REP / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}_annotations_legend.txt",
     sep=" ", index=False,
 )
-
 
 # =================================================================
 # 14. Variant info and phenotype files for downstream analysis
@@ -388,11 +384,11 @@ pd.DataFrame({
     "bin": bins_assigned,
     "freq": freqs,
     "beta": beta,
-}).to_csv(SIM_PATH_REP / f"{SIM_VERSION}_variant_info.csv", index=False)
+}).to_csv(SIM_PATH_REP / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}_variant_info.csv", index=False)
 
 # FID/IID matching the VCF sample names, so GCTA can join on them.
 pd.DataFrame({"FID": 0, "IID": indv_names, "y": y}).to_csv(
-    SIM_PATH_REP / f"{SIM_VERSION}_phenotypes.GENIE.txt",
+    SIM_PATH_REP / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}_phenotypes.GENIE.txt",
     sep="\t", index=False, header=["FID", "IID", "PHENO"]
 )
 
@@ -401,7 +397,7 @@ pd.DataFrame({
     "iid": indv_names,
     "y": y,
     "g": g,
-}).to_csv(SIM_PATH_REP / f"{SIM_VERSION}_phenotypes.csv", index=False)
+}).to_csv(SIM_PATH_REP / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}_phenotypes.csv", index=False)
 
 
 print(f"\nWrote outputs to {SIM_PATH_REP}", flush=True)
