@@ -21,6 +21,10 @@ __pycache__/
 *err
 *out
 
+# figures 
+*png
+*pdf
+
 # R
 .Rhistory
 .RData

@@ -6,24 +6,27 @@ f = glue::glue
 N_REPS = 10
 VERSION = "2.0"
 SELECTION_TYPE = "stabilising_selection"
-N_E = 20000
-V_S = 100
-STEM=f("{VERSION}_{SELECTION_TYPE}_VS_{V_S}_NE_{N_E}")
-
+N_E = 10000
+V_S_vec = c(5, 20, 100)
 FIGS="/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/figs"
-OUT_DIR = file.path(FIGS, STEM)
+GRID = data.table(expand.grid(REP = 1:10, V_S = V_S_vec))
 
 # ---------------------------------------------------------------
 # 1. Load truth and raw GENIE output
 # ---------------------------------------------------------------
-DATA <- "/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v2.0"
+DATA <- "/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v2.0/replicates"
 FIGS <- "/exafs1/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/figs/v2.0"
 
-extract_sim_results = function(REP) {
+extract_sim_results = function(REP, V_S) {
 
-    TRUTH <- fread(file.path(DATA, f("rep{REP}"), f("{STEM}_bin_truth.csv")))
-    ESTIMATED <- file.path(DATA, f("rep{REP}"), f("{STEM}_out_GENIE"))
-    pheno <- fread(file.path(DATA, f("rep{REP}"), f("{STEM}_phenotypes.csv")))
+    STEM=f("{VERSION}_{SELECTION_TYPE}_VS_{V_S}_NE_{N_E}")
+    OUT_DIR = file.path(FIGS, STEM)
+
+    REP_VS_PATH = file.path(DATA, f("VS_{V_S}_NE_{N_E}/{REP}"))
+
+    TRUTH <- fread(file.path(REP_VS_PATH, f("{STEM}_bin_truth.csv")))
+    ESTIMATED <- file.path(REP_VS_PATH, f("{STEM}_out_GENIE"))
+    pheno <- fread(file.path(REP_VS_PATH,  f("{STEM}_phenotypes.csv")))
 
     log_lines <- readLines(ESTIMATED)
 
@@ -69,7 +72,7 @@ extract_sim_results = function(REP) {
     #    (Use the value you have from the pipeline; recompute here if
     #    you'd rather read it directly from the phenotype file.)
     # ---------------------------------------------------------------
-    pheno <- fread(file.path(DATA, f("rep{REP}"), f("{STEM}_phenotypes.csv")))
+    pheno <- fread(file.path(REP_VS_PATH, f("{STEM}_phenotypes.csv")))
     V_P <- var(pheno$y)
     cat(sprintf("Sample phenotypic variance (V_P): %.2f\n", V_P))
 
@@ -84,15 +87,17 @@ extract_sim_results = function(REP) {
     comparison <- merge(TRUTH, ESTIMATES, by = "bin")
 
     comparison[, `:=`(
-    V_estimated  = h2_g * V_P,
-    SE_raw       = SE * V_P,
-    true_share   = V_observed / sum(TRUTH$V_observed),
-    est_share    = h2_g / total_h2
+        V_estimated  = h2_g * V_P,
+        SE_raw       = SE * V_P,
+        true_share   = V_observed / sum(TRUTH$V_observed),
+        est_share    = h2_g / total_h2
     )]
 
     comparison[, `:=`(
-    ratio = V_estimated / V_observed,
-    z     = (V_estimated - V_observed) / SE_raw
+        ratio = V_estimated / V_observed,
+        z     = (V_estimated - V_observed) / SE_raw,
+        V_S = V_S,
+        rep = REP
     )]
 
     comparison[, bin_label := ifelse(
@@ -104,13 +109,20 @@ extract_sim_results = function(REP) {
     list(
         binned_res = comparison,
         total_h2 = total_h2,
-        total_h2_SE = total_h2_SE
+        total_h2_SE = total_h2_SE,
+        V_S = V_S,
+        N_E = N_E,
+        REP = REP
     )
 }
 
-all_sim_reps = purrr::map(1:N_REPS, extract_sim_results)
+all_sim_reps = purrr::pmap(GRID, extract_sim_results)
 
-all_sim_h2 = rbindlist(purrr::map(all_sim_reps, function(x) data.table(x$total_h2, x$total_h2_SE)))
+all_sim_h2 = rbindlist(purrr::map(all_sim_reps, function(x) {
+    data.table(x$total_h2, x$total_h2_SE, V_S = x$V_S)
+        }
+    )
+)
 
 all_sim_bin_h2 = rbindlist(purrr::map(all_sim_reps, function(x) {
     bin = x$binned_res
@@ -132,73 +144,33 @@ bin_summary = all_sim_bin_h2[, .(
   mad       = mean(abs(bias)),
   rmse      = sqrt(mean(bias^2)),
   n_reps    = .N
-), by = bin_label]
+), by = .(bin_label, V_S)]
 
 
 bin_summary[, z := mean_bias / se_bias]
 
-
-p1 = all_sim_bin_h2 %>%
-    mutate(bin_label = factor(bin_label, levels = unique(gtools::mixedsort(all_sim_bin_h2$bin_label)))) %>%
-    ggplot(aes(x=true_share, y=est_share)) + 
-    geom_point(aes(colour=bin_label, size = n_variants)) + 
-    geom_errorbar(aes(ymin=est_share - SE, ymax = est_share + SE)) + 
-    geom_abline(colour='red', linetype='dashed') + 
-    theme_light() +
-    viridis::scale_colour_viridis(option = "plasma", discrete=T)
-
-ggsave(file.path(OUT_DIR, f("{STEM}_genie_vs_truth.repeated.pruned.png")), p1, width = 7, height = 6, dpi = 200)
-
-p2 = all_sim_h2 %>% 
-    rename(h2 = V1, h2_se = V2) %>% 
-    mutate(rep = 1:n()) %>% 
-    ggplot(aes(x=rep, y=h2)) + 
-    geom_point() +s
-    geom_errorbar(aes(ymin=h2 - h2_se, ymax = h2 + h2_se), width=0.3) + 
-    geom_hline(yintercept = 0.5, colour = 'red', linetype='dashed') + 
-    ylim(0, 1)
-
-ggsave(file.path(OUT_DIR, "genie_vs_truth.repeated.h2.pruned.png"), p2, width = 7, height = 6, dpi = 200)
-
-p3 = bin_summary %>%
-    mutate(bin_label = factor(bin_label, levels = unique(gtools::mixedsort(all_sim_bin_h2$bin_label)))) %>%
-    ggplot(aes(x=bin_label, y=mean_bias)) +
+p1 = all_sim_bin_h2 %>%  
+    ggplot(aes(x=true_share, y=est_share, colour=bin_label, shape=as.factor(V_S))) + 
     geom_point() +
-    geom_errorbar(aes(ymin=mean_bias - se_bias, ymax = mean_bias + se_bias)) +
-    geom_hline(yintercept = 0, colour = 'red', linetype = 'dashed') +
-    theme_light() +
-    theme(axis.text.x = element_text(size=8, angle = 45))
+    geom_abline(colour = 'red', linetype = 'dashed') +
+    viridis::scale_colour_viridis(discrete=T)
+p1_out = file.path(FIGS, f("{VERSION}_{SELECTION_TYPE}_true_v_est_VA_V_S_vary.png"))
+ggsave(p1_out, p1)
 
-ggsave(file.path(OUT_DIR, "bias.repeated.h2.pruned.png"), p3, width = 7, height = 6, dpi = 200)
+p2 = all_sim_bin_h2 %>% 
+    mutate(midpoint_bin = (bin_hi - bin_lo) / 2) %>% 
+    group_by(bin_lo, V_S) %>% summarise(mean_true = mean(true_share)) %>% 
+    ggplot(aes(x=bin_lo, y=mean_true, group =  V_S, colour = as.factor(V_S))) + 
+    geom_line() +
+    geom_point()
+p2_out = file.path(FIGS, f("{VERSION}_{SELECTION_TYPE}_true_share_lines_V_S_vary.png"))
+ggsave(p2_out, p2)
 
-# ---------------------------------------------------------------
-# 6. Plot: true share vs estimated share, with error bars
-# ---------------------------------------------------------------
-p <- ggplot(comparison, aes(x = true_share, y = est_share)) +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed",
-              color = "grey50") +
-  geom_errorbar(
-    aes(ymin = est_share - SE / total_h2,
-        ymax = est_share + SE / total_h2),
-    width = 0, color = "#ca5422"
-  ) +
-  geom_point(size = 3, color = "#c1440e") +
-  geom_text(aes(label = bin_label), hjust = -0.15, vjust = -0.3,
-            size = 3, color = "grey40") +
-  labs(
-    x = "true share of V_A",
-    y = "GENIE-estimated share of h2",
-    title = "GENIE recovery of the age-stratified variance profile",
-    subtitle = sprintf("Total h2: true = %.3f, GENIE = %.3f (SE %.3f)",
-                       0.495, total_h2, total_h2_SE)
-  ) +
-  theme_minimal(base_size = 12) +
-  scale_x_continuous(expand = expansion(mult = c(0.05, 0.15))) +
-  coord_cartesian(clip = "off") +
-  theme(
-    panel.grid.minor = element_blank(),
-    plot.margin = margin(t = 10, r = 60, b = 10, l = 10)
-    )
-
-ggsave(file.path(DATA, "genie_vs_truth.png"), p, width = 7, height = 6, dpi = 200)
-print(p)
+p3 = bin_summary %>% 
+    mutate(V_S = factor(V_S, levels = c(5, 20, 100))) %>%
+    ggplot(aes(x=V_S, y=mean_bias, colour=V_S)) + 
+    geom_hline(yintercept = 0, colour = 'red', linetype = 'dashed') + 
+    geom_jitter() + 
+    facet_wrap(~bin_label, nrow=1)
+p3_out = file.path(FIGS, f("{VERSION}_{SELECTION_TYPE}_bias_V_S_vary.png"))
+ggsave(p3_out, p3)

@@ -1,86 +1,136 @@
 """
-Full pipeline: SLiM tree sequence -> recapitate -> overlay mutations ->
-extract true ages, frequencies, effect sizes -> phenotypes -> per-bin plink
-files -> GENIE annotation matrix.
+Full pipeline: SLiM tree sequence (stabilising selection, mutations already
+tracked forward) -> extract true ages, frequencies, effect sizes -> phenotypes
+-> plink fileset -> GENIE annotation matrix.
 
-For a NEUTRAL trait simulation (single population, mutation-drift equilibrium).
+Unlike v1.1, mutations are NOT overlaid afterwards with msprime: selection
+acts on them during the forward simulation, so SLiM has to track them, and
+their effect sizes are read from mutation metadata rather than drawn here.
+
+Changes from the previous version:
+  - Path structure fixed: replicates/VS_{V_S}_NE_{N_E}/{REP}/
+  - ONE pass over mts.variants() instead of two (ages/freqs/beta, then g_all
+    separately). Also fixes the previous version silently mixing `ts` (raw)
+    and `mts` (post multiallelic-filter) across sections.
+  - .bed/.bim/.fam written directly with numpy. No VCF, no plink subprocess.
+  - g computed from the sampled dosage matrix, not a full-population g_all
+    that was then 50% discarded.
+  - MAF filtering applied to ages/beta/freqs/positions simultaneously, so the
+    annotation aligns to the .bim by construction.
 """
-# %
 
-import os
-import subprocess
+import argparse
 from pathlib import Path
-import sys
 import itertools
 
-import msprime
 import numpy as np
 import pandas as pd
-import pyslim
 import tskit
-import scipy
+
 
 # =================================================================
 # 0. Parameters
 # =================================================================
+parser = argparse.ArgumentParser(description="SLiM selection simulation pipeline")
+parser.add_argument("--rep", type=int, required=True, help="Replicate number")
+parser.add_argument("--vs", type=int, required=True, help="Stabilising selection strength (V_S)")
+parser.add_argument("--ne", type=int, required=True, help="Effective population size (N_e)")
+parser.add_argument("--tree", required=True, help="SLiM tree file (mutations already tracked)")
+args = parser.parse_args()
 
-REP = int(sys.argv[1])
-# REP = 1
+REP = args.rep
+V_S = args.vs
+N_E = args.ne
+TREE_FILE = args.tree
+PARAMS = f"VS_{V_S}_NE_{N_E}"
 
-SIM_NE = 20000
 RNG_SEED = 42
-
 ss = np.random.SeedSequence([RNG_SEED, REP])
-seed_mutations, seed_beta, seed_sample, seed_noise = ss.spawn(4)
+seed_sample, seed_noise = ss.spawn(2)   # no seed for beta/mutations: SLiM already drew them
 
-rng_beta = np.random.default_rng(seed_beta)
 rng_sample = np.random.default_rng(seed_sample)
 rng_noise = np.random.default_rng(seed_noise)
 
-RECOMBINATION_RATE = 1e-8   # must match initializeRecombinationRate() in the .slim script
-
 MU = 1.44e-8                # per base per generation mutation rate
-PI_TARGET = 0.01             # fraction of the genome that is mutational target
-
-V_S = 5
-N_E = 20000
-PARAMS = f"VS_{V_S}_NE_{N_E}"
+PI_TARGET = 0.01            # fraction of the genome that is mutational target
 
 SIM_PATH = Path(
     "/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v2.0"
 )
 SIM_VERSION = "2.0"
 SELECTION_TYPE = "stabilising_selection"
+FILE_STEM = f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}"
 
-SIM_PATH_REP = SIM_PATH / f"rep{REP}"
-SIM_PATH_REP.mkdir(exist_ok=True)
+# /well/.../data/v2.0/replicates/VS_{V_S}_NE_{N_E}/{REP}/
+SIM_PATH_REP = SIM_PATH / "replicates" / PARAMS / str(REP)
+SIM_PATH_REP.mkdir(parents=True, exist_ok=True)
 
-N_SAMPLE_TARGET = 50000      # diploids to sample for the GREML/GENIE analysis
+N_SAMPLE_TARGET = 50000     # diploids to sample for the GENIE analysis
 H2 = 0.5
-SIGMA_BETA = 1.0
 
-BINS = [0, 100, 1000, 10000, 50000, np.inf]  
+BINS = [0, 100, 1000, 10000, 50000, np.inf]
 
-TREE_FILE = SIM_PATH / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}.trees"  # shared, not per-rep
-MUT_TREE_FILE = SIM_PATH_REP / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}_out.recap.mut.trees"
-VCF_FILE = SIM_PATH_REP / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}_out.vcf"
-GENOME_PREFIX = SIM_PATH_REP / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}.out"
+GENOME_PREFIX = SIM_PATH_REP / f"{FILE_STEM}.out"
+
 
 # =================================================================
-# 1. Load the SLiM tree sequence
+# Helper: write a PLINK1 .bed/.bim/.fam fileset directly
 # =================================================================
-# Mutations are overlaid *after* the forward simulation rather than during it,
-# because the trait is neutral: nothing in the forward sim depends on where
-# the mutations landed, so msprime can paint them on afterwards far more
-# cheaply than tracking them in SLiM itself.
+def write_plink_bed(dosages, prefix, positions, ref, alt, iids, chrom=1):
+    """
+    dosages : (n_var, n_ind) uint8, count of the ALT (derived) allele, 0/1/2
+    A1 = ALT, A2 = REF, matching plink2's --vcf default orientation.
+    """
+    
+    n_var, n_ind = dosages.shape
+    assert dosages.dtype == np.uint8, f"Expected uint8, got {dosages.dtype}"
+    assert np.all((dosages >= 0) & (dosages <= 2)), \
+        f"Dosages out of range: {np.unique(dosages)}"
+    n_bytes = (n_ind + 3) // 4
+    pad = n_bytes * 4 - n_ind
+
+    lut = np.array([3, 2, 0], dtype=np.uint8)   # indexed by dosage
+
+    with open(f"{prefix}.bed", "wb") as f:
+        f.write(bytes([0x6C, 0x1B, 0x01]))      # magic + SNP-major
+        for start in range(0, n_var, 2000):
+            block = lut[dosages[start:start + 2000]]
+            if pad:
+                block = np.pad(block, ((0, 0), (0, pad)))
+            block = block.reshape(block.shape[0], n_bytes, 4)
+            packed = (block[:, :, 0]
+                      | (block[:, :, 1] << 2)
+                      | (block[:, :, 2] << 4)
+                      | (block[:, :, 3] << 6)).astype(np.uint8)
+            packed.tofile(f)
+
+    snp_ids = [f"{chrom}:{int(p)}:{r}:{a}" for p, r, a in zip(positions, ref, alt)]
+    pd.DataFrame({
+        "chr": chrom, "snpid": snp_ids, "cm": 0,
+        "pos": positions.astype(np.int64), "a1": alt, "a2": ref,
+    }).to_csv(f"{prefix}.bim", sep="\t", index=False, header=False)
+
+    pd.DataFrame({
+        "fid": 0, "iid": iids, "pid": 0, "mid": 0, "sex": 0, "pheno": -9
+    }).to_csv(f"{prefix}.fam", sep="\t", index=False, header=False)
+
+
+# =================================================================
+# 1. Load the SLiM tree sequence (mutations already tracked forward)
+# =================================================================
 ts = tskit.load(TREE_FILE)
 
 n_multiroot = sum(1 for t in ts.trees() if t.num_roots > 1)
 print(f"Loaded: {ts.num_samples} samples, {ts.num_trees} trees, "
       f"{n_multiroot} not yet coalesced", flush=True)
 
-total_span = 0
-weighted_tmrca = 0
+frac_multiroot = n_multiroot / ts.num_trees
+assert frac_multiroot < 0.01, (
+    f"{100 * frac_multiroot:.1f}% of trees uncoalesced - burn-in too short "
+    f"for Ne={N_E} (tree: {TREE_FILE})"
+)
+
+total_span, weighted_tmrca = 0, 0
 for tree in ts.trees():
     root_time = tree.time(tree.root) if tree.num_roots == 1 else None
     if root_time is not None:
@@ -88,26 +138,23 @@ for tree in ts.trees():
         total_span += tree.span
 
 mean_tmrca = weighted_tmrca / total_span
-print(f"Mean TMRCA: {mean_tmrca:.0f} (expect ~4*Ne = {4*SIM_NE} under neutrality)")
+print(f"Mean TMRCA: {mean_tmrca:.0f} (expect ~4*Ne = {4 * N_E} under neutrality)")
 
-# now is a good place to calculate the empirical Ne
-# we can do this based on the distribution of coalescence times
-# as mean(TMRCA) = 2*ne*mu
+
+# =================================================================
+# 2. Empirical Ne from pairwise coalescence times
+# =================================================================
 rng_ne = np.random.default_rng(42)
+sample_nodes = ts.samples()   # actual sample node IDs, not a raw range
 
-sample_nodes = ts.samples()   # the actual valid sample node IDs, not a raw range
-
-rng_ne = np.random.default_rng(42)
 idx_pairs = rng_ne.choice(len(sample_nodes), size=(10000, 2), replace=True)
 sample_pairs = [(int(sample_nodes[a]), int(sample_nodes[b]))
-                for a, b in idx_pairs if a != b]
+                 for a, b in idx_pairs if a != b]
 
 print(f"Using {len(sample_pairs)} pairs from {len(sample_nodes)} true sample nodes")
 print(f"Sample node ID range: {sample_nodes.min()} - {sample_nodes.max()}")
 
-tmrcas = []
-n_failed = 0
-
+tmrcas, n_failed = [], 0
 for tree in itertools.islice(ts.trees(), 0, None, 1000):
     for a, b in sample_pairs:
         try:
@@ -118,23 +165,22 @@ for tree in itertools.islice(ts.trees(), 0, None, 1000):
 tmrcas = np.array(tmrcas)
 print(f"Collected {len(tmrcas)}, failed {n_failed}")
 
-if len(tmrcas) > 0:
-    print(f"Mean pairwise TMRCA: {tmrcas.mean():.0f}")
-    print(f"Ne estimate: {tmrcas.mean()/2:.0f}")
+NE_EMPIRICAL = tmrcas.mean() / 2
+print(f"Mean pairwise TMRCA: {tmrcas.mean():.0f}")
+print(f"Ne estimate: {NE_EMPIRICAL:.0f}")
+
 
 # =================================================================
-# 4. Strip multiallelic sites directly from mts.
-#    Doing this once, here, means every downstream .variants() loop,
-#    the VCF write, and the plink/GENIE outputs are automatically in
-#    lockstep - no separate masking or post-hoc row-matching needed.
-# # =================================================================
+# 3. Strip multiallelic sites, so everything downstream is biallelic
+#    by construction. Use `mts` consistently from here on.
+# =================================================================
 multiallelic_site_ids = np.array(
     [site.id for site in ts.sites() if len(site.mutations) > 1]
 )
 print(f"Removing {len(multiallelic_site_ids)} multiallelic sites "
       f"out of {ts.num_sites}", flush=True)
 
-if len(multiallelic_site_ids) != 0:
+if len(multiallelic_site_ids) > 0:
     tables = ts.dump_tables()
     tables.delete_sites(multiallelic_site_ids)
     tables.sort()
@@ -144,124 +190,114 @@ else:
     print("No multi-allelics to remove", flush=True)
     mts = ts
 
-# mts.dump(MUT_TREE_FILE)
 
 # =================================================================
-# 5. Extract true ages, frequencies, positions
-#    mts is guaranteed biallelic at this point, so no per-variant
-#    filtering is needed here.
+# 4. Single pass over variants.
+#    Collects age, position, ref/alt, population frequency, effect size
+#    (from SLiM mutation metadata), and the dosage matrix for the sampled
+#    individuals, all in one traversal.
 # =================================================================
+n_dip_all = mts.num_samples // 2
+n_sample = min(N_SAMPLE_TARGET, n_dip_all)
+sample_idx = np.sort(rng_sample.choice(n_dip_all, n_sample, replace=False))
+hap_idx = np.stack([2 * sample_idx, 2 * sample_idx + 1], axis=1).ravel()
 
-ages, freqs, positions, beta = [], [], [], []
-for var in ts.variants():
-    mut = ts.mutation(var.site.mutations[0].id)
+M = mts.num_sites
+dosages = np.empty((M, n_sample), dtype=np.uint8)
+ages = np.empty(M)
+freqs = np.empty(M)
+positions = np.empty(M)
+beta = np.empty(M)
+ref = np.empty(M, dtype="<U1")
+alt = np.empty(M, dtype="<U1")
+
+print(f"\nSingle pass over {M} variants "
+      f"({n_sample} of {n_dip_all} diploids sampled)...", flush=True)
+
+for i, var in enumerate(mts.variants()):
+    gt = var.genotypes
+    mut = mts.mutation(var.site.mutations[0].id)
     md = mut.metadata["mutation_list"][0]
-    beta.append(md["selection_coeff"])   # SLiM stores the drawn effect here
-    age = mut.time if not np.isnan(mut.time) else mts.node(mut.node).time
-    ages.append(age)
-    freqs.append(var.genotypes.mean())
-    positions.append(var.site.position)
 
-ages = np.array(ages)
-freqs = np.array(freqs)
-positions = np.array(positions)
-beta = np.array(beta)
-pheno = freqs * beta
+    beta[i] = md["selection_coeff"]     # SLiM stores the drawn effect here
+    ages[i] = mut.time if not np.isnan(mut.time) else mts.node(mut.node).time
+    freqs[i] = gt.mean()
+    positions[i] = var.site.position
+    ref[i] = var.alleles[0][:1] or "A"
+    alt[i] = (var.alleles[1][:1] if len(var.alleles) > 1 and var.alleles[1] else "T")
+    dosages[i] = gt[hap_idx].reshape(-1, 2).sum(axis=1)
 
-M = len(ages)
-print(f"Extracted {M} variants", flush=True)
+pheno_proxy = freqs * beta   # legacy quantity kept for continuity with earlier notebooks
+
 print(f"Age range: {ages.min():.1f} - {ages.max():.1f} generations")
 print(f"Freq range: {freqs.min():.5f} - {freqs.max():.5f}")
 print(f"Beta range: {beta.min():.5f} - {beta.max():.5f}")
 
+
 # =================================================================
-# 7. Ground-truth V_M and V_A checks
+# 5. Ground-truth V_M, V_A, persistence time
 # =================================================================
-# u_target: expected number of target mutations per gamete per generation.
+SIGMA_BETA = 0.1   # SLiM parameter, not re-estimated from data: the empirical
+                   # SD of surviving betas is lower because selection has
+                   # already removed the most deleterious alleles - that's
+                   # the whole point, so it must not be used here.
 
-NE_empricial = tmrcas.mean()/2
-SIGMA_BETA = 0.1 # we can empirically calculate the SIGMA - but we should use the actual SLiM value
-                 # as but the variance will be lower in the sims as the 
-                 # deleterious alleles will have been removed by selection (that's the point)
+print(f"SD of extracted betas: {beta.std():.4f} (SLiM param: {SIGMA_BETA})")
 
-
-V_A_empirical = np.sum(2 * freqs * (1-freqs) * beta**2)
-V_P = np.var(pheno)
-
-print(f"SD of extracted betas: {beta.std():.4f} (SLiM param: {0.1})")
-u_target = MU * PI_TARGET * ts.sequence_length # mutational target stays the same as before 
-
+u_target = MU * PI_TARGET * mts.sequence_length
 V_M_analytic_true = 2 * u_target * SIGMA_BETA**2
+
+V_A_empirical = np.sum(2 * freqs * (1 - freqs) * beta**2)
+V_P = np.var(pheno_proxy)
 
 PERSISTENCE_TIME = V_A_empirical / V_M_analytic_true
 
-S_BAR = SIGMA_BETA**2 / (2*V_S + V_P)
-
-V_P_true = np.sum(2 * freqs * (1 - freqs) * beta**2)  # = V_A_empirical, should match your earlier print
-print(f"V_P (= V_A_empirical): {V_P_true:.4g}")
-
-S_BAR = SIGMA_BETA**2 / (2 * (V_S + V_P_true))
+# s(beta) = beta^2 / (2*(V_S + V_P)): V_P dilutes selection via phenotypic
+# background, not V_S alone.
+S_BAR = SIGMA_BETA**2 / (2 * (V_S + V_A_empirical))
+print(f"V_A empirical (= V_P proxy): {V_A_empirical:.4g}")
 print(f"S_BAR corrected: {S_BAR:.6f}")
-print(f"Persistence 1/S_BAR: {1/S_BAR:.0f} generations")
+print(f"Persistence 1/S_BAR: {1 / S_BAR:.0f} generations")
 
-REGIME_PARAMETER = S_BAR * NE_empricial
-
-V_A_analytic_neutral = 2 * NE_empricial * V_M_analytic_true
+REGIME_PARAMETER = S_BAR * NE_EMPIRICAL
+V_A_analytic_neutral = 2 * NE_EMPIRICAL * V_M_analytic_true
 V_A_analytic_selection = V_M_analytic_true / S_BAR
 
-print(f"N_e × s̄ = {REGIME_PARAMETER:.2f}")
+print(f"N_e x s_bar = {REGIME_PARAMETER:.2f}")
 if REGIME_PARAMETER > 1:
-    print("  → Selection dominates; expect V_A ≈ V_M / s̄")
+    print("  -> Selection dominates; expect V_A ~ V_M / s_bar")
 elif REGIME_PARAMETER < 1:
-    print("  → Drift dominates; expect V_A ≈ 2·N_e·V_M")
+    print("  -> Drift dominates; expect V_A ~ 2*N_e*V_M")
 else:
-    print("  → Intermediate regime; expect neither prediction to be exact")
+    print("  -> Intermediate regime; expect neither prediction to be exact")
 
-
-ratio_to_msb = V_A_empirical / V_A_analytic_selection
-print(f"V_A empirical / V_A_MSB: {ratio_to_msb:.3f}  (should be ≈ 1.0)")
-
-ratio_to_neutral = V_A_empirical / V_A_analytic_neutral
-print(f"V_A empirical / V_A neutral: {ratio_to_neutral:.3f}  (should be << 1.0 if selection dominates)")
-
+print(f"V_A empirical / V_A_MSB: {V_A_empirical / V_A_analytic_selection:.3f}  (should be ~ 1.0)")
+print(f"V_A empirical / V_A neutral: {V_A_empirical / V_A_analytic_neutral:.3f}  (should be << 1.0 if selection dominates)")
 print(f"Persistence time observed: {PERSISTENCE_TIME:.0f} generations")
-print(f"Persistence time 1/s̄ (MSB):  {1/S_BAR:.0f} generations")
-print(f"Persistence time 2Ne (neutral): {2*NE_empricial:.0f} generations")
+print(f"Persistence time 1/s_bar (MSB): {1 / S_BAR:.0f} generations")
+print(f"Persistence time 2Ne (neutral): {2 * NE_EMPIRICAL:.0f} generations")
 
-# # =================================================================
-# # 8. Build genetic values, then sample individuals
-# #
-# #    NOTE: build g over ALL individuals first, then subset. Passing
-# #    samples=hap_idx to .variants() drops variants that are monomorphic
-# #    in the subset, which desynchronises the variant enumeration from
-# #    beta[i] and silently corrupts g.
-# # =================================================================
-n_dip_all = ts.num_samples // 2
-print(f"\nBuilding genetic values for all {n_dip_all} diploids...", flush=True)
-print(ts.num_individuals, n_dip_all)  # do these match?
 
-g_all = np.zeros(n_dip_all)
-for i, var in enumerate(ts.variants()):
-    geno = var.genotypes.reshape(-1, 2).sum(axis=1)   # diploid dosage 0/1/2
-    g_all += beta[i] * geno
-
-print(f"V_A across all individuals: {np.var(g_all):.4g} "
-      f"(expect ~{V_A_empirical:.4g}; small gap is LD)", flush=True)
-
-n_sample = min(N_SAMPLE_TARGET, n_dip_all)
-sample_idx = np.sort(rng_sample.choice(n_dip_all, n_sample, replace=False))
-g = g_all[sample_idx]
+# =================================================================
+# 6. Genetic values and phenotypes for the sampled individuals.
+#    Chunked matmul to avoid materialising a large float intermediate.
+# =================================================================
+print("\nBuilding genetic values...", flush=True)
+g = np.zeros(n_sample, dtype=np.float64)
+for start in range(0, M, 2000):
+    end = min(start + 2000, M)
+    g += dosages[start:end].T.astype(np.float32) @ beta[start:end]
 
 V_E = np.var(g) * (1 - H2) / H2
 y = g + rng_noise.normal(0, np.sqrt(V_E), n_sample)
 
 print(f"Sampled {n_sample} of {n_dip_all} diploids")
-print(f"V_A in sample: {np.var(g):.4g},  V_E: {V_E:.4g}")
+print(f"V_A in sample: {np.var(g):.4g}, V_E: {V_E:.4g}")
 print(f"Realised h2: {np.var(g) / np.var(y):.3f} (target {H2})", flush=True)
 
+
 # =================================================================
-# 9. True per-bin variance, compared against the analytic neutral kernel
-#    This is the ground truth the REML/GENIE estimates must recover.
+# 7. True per-bin variance, over the full population (pre-MAF-filter)
 # =================================================================
 bin_labels = []
 for i in range(len(BINS) - 1):
@@ -271,7 +307,7 @@ for i in range(len(BINS) - 1):
 
 bins_assigned = pd.cut(ages, bins=BINS, labels=bin_labels, right=False)
 
-print(f"\n{'Bin (gens)':<18}{'n':>7}{'observed':>12}{'predicted':>12}")
+print(f"\n{'Bin (gens)':<18}{'n':>7}{'observed':>12}")
 bin_rows = []
 for lo, hi in zip(BINS[:-1], BINS[1:]):
     m = (ages >= lo) & (ages < hi)
@@ -283,99 +319,68 @@ for lo, hi in zip(BINS[:-1], BINS[1:]):
     label = f"{lo:.0f}+" if np.isinf(hi) else f"{lo:.0f}-{hi:.0f}"
     print(f"{label:<18}{m.sum():>7}{V_bin:>12.4g}")
 
-    bin_rows.append({
-        "bin_lo": lo, "bin_hi": hi, "n_variants": int(m.sum()),
-        "V_observed": V_bin, 
-    })
+    bin_rows.append({"bin_lo": lo, "bin_hi": hi, "n_variants": int(m.sum()), "V_observed": V_bin})
 
 pd.DataFrame(bin_rows).to_csv(
-    SIM_PATH_REP / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}_bin_truth.csv", index=False)
+    SIM_PATH_REP / f"{FILE_STEM}_bin_truth.csv", index=False)
+
 
 # =================================================================
-# 10. Write VCF for the sampled individuals
-#     individual_names avoids plink's "Sample ID ends with _0" error.
-#     mts is already biallelic-only, so no site_mask is needed here.
+# 8. MAF filter in the sample, applied to every per-variant array at once,
+#    so the annotation aligns to the .bim by construction.
 # =================================================================
+sample_freq = dosages.mean(axis=1) / 2
+keep = (sample_freq > 0) & (sample_freq < 1)
+
+print(f"\nAfter MAF filtering: {keep.sum()} of {M} variants retained "
+      f"({M - keep.sum()} dropped as monomorphic in the sample)", flush=True)
+
+dosages_f = dosages[keep]
+positions_f = positions[keep]
+ages_f = ages[keep]
+ref_f, alt_f = ref[keep], alt[keep]
+
 indv_names = [f"ind{i}" for i in range(n_sample)]
 
-print(f"\nWriting VCF for {n_sample} sampled individuals...", flush=True)
-with open(VCF_FILE, "wt") as f:
-    mts.write_vcf(f, individuals=sample_idx, individual_names=indv_names)
+# Validate dosages before packing
+assert np.all((dosages_f >= 0) & (dosages_f <= 2)), \
+    f"Invalid dosage values: min={dosages_f.min()}, max={dosages_f.max()}, NaN={np.isnan(dosages_f).sum()}"
+assert not np.isnan(dosages_f).any(), "NaN in dosages"
 
-# =================================================================
-# 11. Genome-wide plink fileset, MAF-filtered.
-#     Filtering removes any variant monomorphic in the *sampled*
-#     50,000 individuals (GENIE requires MAF > 0). This changes
-#     which variants survive relative to `ages`/`bins_assigned`,
-#     which were built over the full population - so the annotation
-#     must be rebuilt from this .bim, matched by position, not
-#     reused from the pre-filter arrays.
-# =================================================================
-cmd = (f"plink2 --vcf {VCF_FILE} --maf 0.0000001 "
-       f"--make-bed --out {GENOME_PREFIX}")
-subprocess.run(cmd, shell=True, check=True)
+print(f"Dosages OK: shape {dosages_f.shape}, range [{dosages_f.min()}, {dosages_f.max()}]", flush=True)
 
-bim = pd.read_csv(f"{GENOME_PREFIX}.bim", sep="\t", header=None,
-                   names=["chr", "snpid", "cm", "pos", "a1", "a2"])
-print(f"After MAF filtering: {len(bim)} of {M} variants retained "
-      f"({M - len(bim)} dropped as monomorphic in the sample)", flush=True)
-
-# Reindex ages/bins to match the filtered .bim, by position.
-pos_to_age = pd.Series(ages, index=positions)
-ages_filtered = pos_to_age.loc[bim["pos"].values].to_numpy()
-bins_assigned_filtered = pd.cut(ages_filtered, bins=BINS,
-                                 labels=bin_labels, right=False)
+write_plink_bed(dosages_f, GENOME_PREFIX, positions_f, ref_f, alt_f, indv_names)
 
 
 # =================================================================
-# 12. Per-bin plink files (for GCTA / GRM-based diagnostics)
-#     tskit writes site.id into the VCF ID column, and site.id is the
-#     0-based index into the variant enumeration, so no offset is needed
-#     when extracting.
+# 9. GENIE annotation matrix. Row i corresponds to row i of the .bim
+#    by construction, since both come from the same `keep` mask.
 # =================================================================
-# for lo, hi in zip(BINS[:-1], BINS[1:]):
-#     m = (ages >= lo) & (ages < hi)
-#     if m.sum() == 0:
-#         continue
+bins_assigned_filtered = pd.cut(ages_f, bins=BINS, labels=bin_labels, right=False)
 
-#     variant_ids = np.where(m)[0]
+annotations = pd.get_dummies(
+    bins_assigned_filtered, prefix="bin", prefix_sep="_"
+).astype(int)
 
-#     label = f"{lo:.0f}_{hi:.0f}" if not np.isinf(hi) else f"{lo:.0f}_inf"
-#     var_file = SIM_PATH_REP / f"{SIM_VERSION}_bin_{label}_vars.txt"
-#     prefix = SIM_PATH_REP / f"{SIM_VERSION}_bin_{label}"
-
-#     np.savetxt(var_file, variant_ids, fmt="%d")
-
-#     cmd = (f"plink2 --vcf {VCF_FILE} --extract {var_file} "
-#            f"--make-bed --out {prefix}")
-#     subprocess.run(cmd, shell=True, check=True)
-
-#     print(f"Wrote {prefix}.bed/bim/fam with {m.sum()} variants", flush=True)
-#     os.remove(var_file)
-
-# =================================================================
-# 13. GENIE annotation matrix — built from the MAF-filtered .bim,
-#     so row count and order match the genome-wide genotype file
-#     GENIE will actually load.
-# =================================================================
-annotations = pd.get_dummies(bins_assigned_filtered, prefix="bin", prefix_sep="_").astype(int)
+assert len(annotations) == keep.sum(), "annotation rows != retained variants"
+assert (annotations.sum(axis=1) == 1).all(), "each variant must fall in exactly one bin"
 
 annotations.to_csv(
-    SIM_PATH_REP / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}_annotations_age_bins.txt",
+    SIM_PATH_REP / f"{FILE_STEM}_annotations_age_bins.txt",
     sep=" ", index=False, header=False,
 )
 
-legend = pd.DataFrame({
+pd.DataFrame({
     "column_name": annotations.columns,
     "age_bin": bin_labels,
-})
-legend.to_csv(
-    SIM_PATH_REP / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}_annotations_legend.txt",
+}).to_csv(
+    SIM_PATH_REP / f"{FILE_STEM}_annotations_legend.txt",
     sep=" ", index=False,
 )
 
+
 # =================================================================
-# 14. Variant info and phenotype files for downstream analysis
+# 10. Variant info and phenotype files
 # =================================================================
 pd.DataFrame({
     "site_id": np.arange(M),
@@ -384,11 +389,11 @@ pd.DataFrame({
     "bin": bins_assigned,
     "freq": freqs,
     "beta": beta,
-}).to_csv(SIM_PATH_REP / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}_variant_info.csv", index=False)
+    "kept": keep,
+}).to_csv(SIM_PATH_REP / f"{FILE_STEM}_variant_info.csv", index=False)
 
-# FID/IID matching the VCF sample names, so GCTA can join on them.
 pd.DataFrame({"FID": 0, "IID": indv_names, "y": y}).to_csv(
-    SIM_PATH_REP / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}_phenotypes.GENIE.txt",
+    SIM_PATH_REP / f"{FILE_STEM}_phenotypes.GENIE.txt",
     sep="\t", index=False, header=["FID", "IID", "PHENO"]
 )
 
@@ -397,7 +402,6 @@ pd.DataFrame({
     "iid": indv_names,
     "y": y,
     "g": g,
-}).to_csv(SIM_PATH_REP / f"{SIM_VERSION}_{SELECTION_TYPE}_{PARAMS}_phenotypes.csv", index=False)
-
+}).to_csv(SIM_PATH_REP / f"{FILE_STEM}_phenotypes.csv", index=False)
 
 print(f"\nWrote outputs to {SIM_PATH_REP}", flush=True)
