@@ -103,7 +103,7 @@ extract_sim_results = function(REP) {
 all_sim_bin_h2 <- rbindlist(purrr::map(1:N_REPS, extract_sim_results))
 
 all_sim_bin_h2[, bias := est_share - true_share]
-all_sim_bin_h2[, per_bias := ((est_share - true_share) / true) * 100]
+all_sim_bin_h2[, perc_bias := ((est_share - true_share) / true_share) * 100]
 
 bin_levels <- c("0–100", "100–1,000", "1,000–10,000", "10,000–50,000",
                 "50,000–100,000", "100,000–200,000", "200,000–500,000",
@@ -161,15 +161,27 @@ p1 <- ggplot(all_sim_bin_h2, aes(x = bin_label, y = bias, colour = pruned)) +
 ggsave(file.path(FIGS, "bias_n100_jitter.png"), p1, width = 9, height = 5.5, dpi = 200)
 
 
-p4 <- ggplot(all_sim_bin_h2, aes(x = true_share, y = est_share, colour = bin_label)) +
-    geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey40") +
+means <- all_sim_bin_h2[
+    ,
+    .(
+        true_share = mean(true_share),
+        est_share  = mean(est_share)
+    ),
+    by = .(pruned, bin_label)
+]
+
+p4 <- ggplot(
+    all_sim_bin_h2,
+    aes(x = true_share, y = est_share, colour = bin_label)) +
+    geom_abline( slope = 1, intercept = 0, linetype = "dashed", colour = "grey40" ) +
     geom_point(alpha = 0.2, size = 1) +
-    stat_summary(fun = mean, geom = "point", size = 2.5, colour = "black") +
-    facet_wrap(~pruned, labeller = as_labeller(
-        c("FALSE" = "Unpruned", "TRUE" = "Pruned"))) +
-    scale_colour_viridis(discrete=T, option = "plasma", begin = 0.1, end = 0.9,
-                            name = "Age bin") +
-    labs(x = "True share of V_A", y = "Estimated share of V_A") +
+    geom_point(data = means, aes(x = true_share, y = est_share), inherit.aes = FALSE, size = 2.5, colour = "black") +
+    facet_wrap(~pruned, labeller = as_labeller( c("FALSE" = "Unpruned", "TRUE" = "Pruned"))) +
+    scale_colour_viridis_d(option = "plasma", begin = 0.1, end = 0.9, name = "Age bin") +
+    labs(
+        x = "True share of V_A",
+        y = "Estimated share of V_A"
+    ) +
     coord_fixed() +
     theme_light(base_size = 11) +
     theme(panel.grid.minor = element_blank())
