@@ -1,14 +1,9 @@
-// updated from version 1.1:
-// [1]: Add in mutations with fitness effects - sweep over a range of
-//      parameters, probably V_S = [5, 20, 100], where V_S is the width of
-//      the fitness function and s ~ beta^2 / (2*V_S) for a mutation of effect beta
-// [2]: Recapitation stops working under selection :(, since msprime's coalescent
-//      doesn't know about fitness - so we need a full forward burn-in on the
-//      order of 4-5*Ne generations. Reducing Ne to keep runtime tractable.
-
+// updated from version 2.0:
+// [1]: Just update the genome length from 1e8 -> 5e8
+// [2]: Drop back down to 25K individuals 
+// [3]: Move up to 375K ticks so hoping most of the trees 
+//        will coalesce
 initialize() {
-    defineConstant("N", 10000);
-    // defineConstant("L", 1e8);
     defineConstant("start_time", clock());
     initializeTreeSeq();
     initializeMutationRate(MU * PI_TARGET);
@@ -26,7 +21,7 @@ fitnessEffect() {
     return exp(-(phenotype^2) / (2 * V_S));
 }
 
-1 early() { sim.addSubpop("p1", N); }
+1 early() { sim.addSubpop("p1", NE); }
 
 1: late() {
     if (community.tick % 1000 == 0) {
@@ -42,6 +37,13 @@ fitnessEffect() {
             + "  V_P: " + format("%.4f", var(phenotypes))
             + "  (" + format("%.0f", elapsed) + "s elapsed, "
             + format("%.0f", remaining_secs) + "s remaining)\n");
+    }
+}
+
+50000:375000 late() {
+    if (community.tick % 50000 == 0) {
+        sim.treeSeqOutput(outfile + ".tick" + community.tick);
+        catn("Checkpoint at tick " + community.tick);
     }
 }
 
