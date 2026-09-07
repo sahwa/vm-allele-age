@@ -174,7 +174,7 @@ p4 <- ggplot(
     all_sim_bin_h2,
     aes(x = true_share, y = est_share, colour = bin_label)) +
     geom_abline( slope = 1, intercept = 0, linetype = "dashed", colour = "grey40" ) +
-    geom_point(alpha = 0.2, size = 1) +
+    geom_point(alpha = 0.75, size = 1) +
     geom_point(data = means, aes(x = true_share, y = est_share), inherit.aes = FALSE, size = 2.5, colour = "black") +
     facet_wrap(~pruned, labeller = as_labeller( c("FALSE" = "Unpruned", "TRUE" = "Pruned"))) +
     scale_colour_viridis_d(option = "plasma", begin = 0.1, end = 0.9, name = "Age bin") +
@@ -184,14 +184,19 @@ p4 <- ggplot(
     ) +
     coord_fixed() +
     theme_light(base_size = 11) +
-    theme(panel.grid.minor = element_blank())
+    theme(
+        panel.grid.minor = element_blank(),
+        strip.text = element_text(colour='black'), 
+        strip.background = element_rect(fill='white')
+    )
+
 
 ggsave(file.path(FIGS, "obs_vs_exp_faceted_n100.png"), p4, width = 11, height = 5.5, dpi = 200)
 
 p5 <- ggplot(all_sim_bin_h2[est_share > 0],
              aes(x = true_share, y = est_share, colour = bin_label)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey40") +
-    geom_point(alpha = 0.2, size = 1) +
+    geom_point(alpha = 0.75, size = 1) +
     facet_wrap(~pruned, labeller = as_labeller(
         c("FALSE" = "Unpruned", "TRUE" = "Pruned"))) +
     scale_x_log10() + scale_y_log10() +
@@ -199,6 +204,33 @@ p5 <- ggplot(all_sim_bin_h2[est_share > 0],
                             name = "Age bin") +
     labs(x = "True share of V_A (log)", y = "Estimated share of V_A (log)") +
     coord_fixed() +
-    theme_light(base_size = 11)
+    theme(strip.text = element_text(colour='black'), strip.background = element_rect(fill='white'))
+    theme_light(base_size = 11) 
 
-ggsave(file.path(FIGS, "obs_vs_exp_faceted_n100.png"), p4, width = 11, height = 5.5, dpi = 200)
+ggsave(file.path(FIGS, "obs_vs_exp_faceted_n100.png"), p5, width = 11, height = 5.5, dpi = 200)
+
+
+p6 = all_sim_bin_h2 %>% 
+    group_by(pruned, bin_label, bin_lo, bin_hi) %>% 
+    summarise(
+        mean_true_share = mean(true_share), 
+        true_95 = quantile(true_share, 0.95),
+        true_05 = quantile(true_share, 0.05),
+        mean_est_share = mean(est_share),
+        est_95 = quantile(est_share, 0.95),
+        est_05 = quantile(est_share, 0.05),
+        .groups = "drop"
+    ) %>%
+    mutate(
+        midpoint = if_else(
+            is.infinite(bin_hi),
+            500000,
+            (bin_lo + bin_hi) / 2
+        )
+    ) %>%
+    ggplot(aes(x=midpoint, y=mean_true_share)) +
+    geom_line(aes(x=midpoint, y=mean_true_share), colour='blue') +
+    geom_ribbon(aes(x=midpoint, ymin=true_05, ymax=true_95), fill='blue', alpha=0.5) +
+    scale_x_continuous(trans='log10')
+
+ggsave(file.path(FIGS, "true_share_n100.png"), p6, width = 11, height = 5.5, dpi = 200)

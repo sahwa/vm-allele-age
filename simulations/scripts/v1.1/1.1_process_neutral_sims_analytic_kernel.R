@@ -1,12 +1,16 @@
 library(purrr)
+library(scales)
+
 
 f = glue::glue
-N_REPS = 10
+N_REPS = 100
+VERSION=1.1
 
 # ---------------------------------------------------------------
 # 1. Load truth and raw GENIE output
 # ---------------------------------------------------------------
 DATA <- "/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v1.1"
+FIGS <- f("/exafs1/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/figs/v{VERSION}")
 
 extract_sim_results = function(REP, PRUNED) {
 
@@ -177,3 +181,138 @@ pers_summary <- pers_long[, .(
         na.rm = TRUE
     )
 ), by = .(TYPE, obj)]
+
+
+
+##### plots #####
+
+pers_long <- pers %>%
+    tidyr::pivot_longer(
+        cols = matches("^T_(est|true)_o_[1-4]$"),
+        names_to = c(".value", "outcome"),
+        names_pattern = "T_(est|true)_(o_[1-4])"
+    ) %>%
+    mutate(
+        TYPE = factor(TYPE, levels = c("UNPRUNED", "PRUNED")),
+        outcome = factor(
+            outcome,
+            levels = c("o_1", "o_2", "o_3", "o_4"),
+            labels = c("o_1", "o_2", "o_3", "o_4")
+        )
+    )
+true_lines <- pers_long %>%
+    group_by(TYPE, outcome) %>%
+    summarise(
+        true_mean = mean(true),
+        .groups = "drop"
+    )
+# Panel-level statistics
+panel_stats <- pers_long %>%
+    group_by(TYPE, outcome) %>%
+    summarise(
+        RelBias = 100 * mean((est - true) / true),
+        RMSE = sqrt(mean((est - true)^2)),
+        .groups = "drop"
+    )
+
+p1 <- ggplot(pers_long, aes(x = est)) +
+    
+    geom_histogram(
+        bins = 25,
+        fill = "grey35",
+        colour = "white",
+        linewidth = 0.25
+    ) +
+    
+    # Mean true T
+    geom_vline(
+        data = true_lines,
+        aes(xintercept = true_mean),
+        colour = "#B2182B",
+        linetype = "dashed",
+        linewidth = 0.8
+    ) +
+    
+    # RMSE + bias
+geom_text(
+    data = panel_stats,
+    aes(
+        x = Inf,
+        y = Inf,
+        label = sprintf(
+            "Rel. bias: %+.1f%%\nRMSE: %.1fk",
+            RelBias,
+            RMSE / 1000
+        )
+    ),
+    hjust = 1.08,
+    vjust = 1.3,
+    size = 3.3,
+    lineheight = 1.15,
+    inherit.aes = FALSE
+) +
+    
+    facet_grid(
+        TYPE ~ outcome,
+        labeller = labeller(
+            outcome = c(
+                o_1 = "O1",
+                o_2 = "O2",
+                o_3 = "O3",
+                o_4 = "O4"
+            ),
+            TYPE = c(
+                UNPRUNED = "Unpruned",
+                PRUNED = "Pruned"
+            )
+        )
+    ) +
+    
+    scale_x_continuous(
+        labels = label_number(
+            scale = 1e-3,
+            suffix = "k"
+        )
+    ) +
+    
+    labs(
+        x = "Estimated T",
+        y = "Frequency"
+    ) +
+    
+    theme_classic(base_size = 12) +
+    
+    theme(
+        # ---- dividing lines between panels ----
+        panel.border = element_rect(
+            colour = "grey75",
+            fill = NA,
+            linewidth = 0.5
+        ),
+        
+        # small amount of space between panels
+        panel.spacing = unit(0.15, "lines"),
+        
+        # facet labels
+        strip.background = element_rect(
+            fill = "grey92",
+            colour = "grey75",
+            linewidth = 0.5
+        ),
+        strip.text.x = element_text(
+            size = 11,
+            face = "bold"
+        ),
+        strip.text.y = element_text(
+            size = 11,
+            face = "bold"
+        ),
+        
+        # axes
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size = 10),
+        axis.ticks = element_line(linewidth = 0.4)
+    )
+
+ggsave(file.path(FIGS, "est_persistence_distribution.png"), p1, width = 11, height = 5.5, dpi = 200)
+
