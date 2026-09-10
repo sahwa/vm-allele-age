@@ -87,13 +87,14 @@ ts = msprime.sim_ancestry(
     random_seed = 1
 )
 
+ts = msprime.sim_mutations(ts, rate=MU, random_seed=1)
+ts.dump(RTS_FILE)
 
 # save here since this step takes a long time
 
 
 #### sim the mutations on the treee ###
 
-ts = msprime.sim_mutations(ts, rate=MU, random_seed=1)
 
 ## Do some checks to infer 
 
