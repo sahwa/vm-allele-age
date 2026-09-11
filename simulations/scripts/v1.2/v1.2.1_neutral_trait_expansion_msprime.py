@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-v1.2 — neutral trait under Tennessen-style European expansion.
+v1.2.1 — neutral trait under Tennessen-style European expansion.
 
 Simulates a neutral polygenic trait on an msprime tree sequence, bins variants
 by true allele age, and writes a PLINK fileset + GENIE annotation matrix.
@@ -9,6 +9,8 @@ Memory note: the genotype matrix is never held in full. Variants are streamed in
 genomic chunks; each chunk is packed straight into the .bed file and its
 contribution to each individual's genetic value is accumulated on the fly.
 Only per-variant metadata (O(M) floats) and per-individual vectors (O(N)) persist.
+
+Difference to version v1.2 is that we will simulate 1Gb(!) of contiguous sequence
 """
 
 import copy
@@ -34,7 +36,7 @@ POP = "EUR"
 N_FINAL_TARGET = 500_000      # present-day EUR size (calibrated to UKB singleton frac)
 EUR_GROWTH_RATE = 0.0195      # from the base model; kept when rescaling the endpoint
 N_SAMPLE = 20_000             # diploids drawn as samples
-L = 1e8                       # sequence length (bp)
+L = 1e9                       # sequence length (bp)
 MU = 1.25e-8                  # per-bp per-generation mutation rate
 REC = 1e-8                    # per-bp per-generation recombination rate
 
@@ -65,7 +67,6 @@ seed_beta, seed_causal, seed_noise = _ss.spawn(3)
 rng_beta = np.random.default_rng(seed_beta)
 rng_causal = np.random.default_rng(seed_causal)
 rng_noise = np.random.default_rng(seed_noise)
-
 
 # =================================================================
 # Demography
@@ -273,15 +274,21 @@ print(f"Retained:   {keep.sum()} of {M_RAW} "
       f"({M_RAW - keep.sum()} monomorphic in sample)", flush=True)
 
 
-np.save(SIM_PATH_REP / f"{SIM_VERSION}_singleton_counts.npy", sing_counts)
+bin_labels = [
+    f"{lo:.0f}+" if np.isinf(hi) else f"{lo:.0f}-{hi:.0f}"
+    for lo, hi in zip(BINS[:-1], BINS[1:])
+]
 
-print(f"\n{'Bin':<20}{'n_sing':>10}{'mean c_i':>10}{'CV':>8}")
+pd.DataFrame(sing_counts, columns=bin_labels).to_csv(
+    SIM_PATH_REP / f"{SIM_VERSION}_singleton_counts.csv", index=False)
 
-for b, (lo, hi) in enumerate(zip(BINS[:-1], BINS[1:])):
+print(f"\n{'Bin':<20}{'n_sing':>10}{'mean c_i':>10}{'CV':>8}{'var/mean':>10}")
+for b, label in enumerate(bin_labels):
     c = sing_counts[:, b]
-    label = f"{lo:.0f}+" if np.isinf(hi) else f"{lo:.0f}-{hi:.0f}"
-    cv = c.std() / c.mean() if c.mean() > 0 else np.nan
-    print(f"{label:<20}{c.sum():>10}{c.mean():>10.1f}{cv:>8.3f}")
+    m = c.mean()
+    cv = c.std() / m if m > 0 else np.nan
+    vm = c.var() / m if m > 0 else np.nan
+    print(f"{label:<20}{c.sum():>10}{m:>10.2f}{cv:>8.3f}{vm:>10.2f}")
 
 
 # =================================================================
