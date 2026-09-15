@@ -141,6 +141,7 @@ def write_bim_fam(prefix, positions, ref, alt, iids, chrom=1):
 if TREE_FILE.is_file():
     print(f"Loading cached tree sequence: {TREE_FILE}", flush=True)
     ts = tskit.load(str(TREE_FILE))
+    print(f"Successfully loaded cached tree sequence: {TREE_FILE}", flush=True)
 else:
     species = stdpopsim.get_species("HomSap")
     base = species.get_demographic_model(DEMOG_MODEL).model
@@ -171,7 +172,7 @@ multiallelic_site_ids = np.array(
 print(f"Removing {len(multiallelic_site_ids)} multiallelic sites "
       f"out of {ts.num_sites}", flush=True)
 
-if len(multiallelic_site_ids) > 0: 
+if len(multiallelic_site_ids) > 0:
     tables = ts.dump_tables()
     tables.delete_sites(multiallelic_site_ids)
     tables.sort()
@@ -189,235 +190,226 @@ print(f"{M_RAW} sites, {N_IND} diploids", flush=True)
 # # =================================================================
 # # 2. Effect sizes (neutral trait: beta independent of age and frequency)
 # # =================================================================
-# causal = rng_causal.random(M_RAW) < PI_CAUSAL
-# beta = np.zeros(M_RAW)
-# beta[causal] = rng_beta.normal(0, SIGMA_BETA, size=causal.sum())
-# print(f"{causal.sum()} causal variants ({causal.mean():.3%})", flush=True)
+causal = rng_causal.random(M_RAW) < PI_CAUSAL
+beta = np.zeros(M_RAW)
+beta[causal] = rng_beta.normal(0, SIGMA_BETA, size=causal.sum())
+print(f"{causal.sum()} causal variants ({causal.mean():.3%})", flush=True)
 
 # # =================================================================
 # # 3. Streaming pass: pack .bed, accumulate genetic values, collect metadata
 # # =================================================================
-# ages = np.empty(M_RAW)
-# freqs = np.empty(M_RAW)
-# positions = np.empty(M_RAW)
-# ref = np.empty(M_RAW, dtype="<U1")
-# alt = np.empty(M_RAW, dtype="<U1")
-# keep = np.zeros(M_RAW, dtype=bool)
 
-# N_BINS = len(BINS) - 1
-# sing_counts = np.zeros((N_IND, N_BINS), dtype=np.int32)   # c_i^(t)
-# all_counts  = np.zeros((N_IND, N_BINS), dtype=np.int32)   # optional: all variants
+tabs = ts.tables
 
-# g = np.zeros(N_IND)                      # genetic value, accumulated per chunk
-# bed_f = open_bed(GENOME_PREFIX)
+mut_node = tabs.mutations.node
+mut_time = tabs.mutations.time
+ages_all = np.where(np.isnan(mut_time), tabs.nodes.time[mut_node], mut_time)
 
-# print(f"\nStreaming {M_RAW} sites in {CHUNK_BP/1e6:.0f} Mb chunks...", flush=True)
-# offset, start = 0, 0.0
-# while start < L:
-#     end = min(start + CHUNK_BP, L)
-#     sub = ts.keep_intervals([[start, end]], simplify=False)
-#     n_c = sub.num_sites
-#     if n_c == 0:
-#         start = end
-#         continue
-#     sl = slice(offset, offset + n_c)
+is_sample = np.zeros(ts.num_nodes, dtype=bool)
+is_sample[ts.samples()] = True
+sing = is_sample[mut_node]
 
-#     # --- genotypes ---
-#     G = sub.genotype_matrix()
-#     dosage = G.reshape(n_c, -1, 2).sum(axis=2).astype(np.uint8)
-#     freqs[sl] = G.mean(axis=1)
-#     del G
+carrier   = tabs.nodes.individual[mut_node[sing]]   # node -> individual
+sing_ages = ages_all[sing]
 
-#     # --- metadata (must precede any use of ages[sl]) ---
-#     tabs = sub.tables
-#     mt = tabs.mutations.time
-#     nt = tabs.nodes.time[tabs.mutations.node]
-#     ages[sl] = np.where(np.isnan(mt), nt, mt)
-#     positions[sl] = tabs.sites.position
-#     ref[sl] = tskit.unpack_strings(
-#         tabs.sites.ancestral_state, tabs.sites.ancestral_state_offset)
-#     alt[sl] = tskit.unpack_strings(
-#         tabs.mutations.derived_state, tabs.mutations.derived_state_offset)
-
-#     # --- MAF mask (must precede any use of k) ---
-#     k = (freqs[sl] > 0) & (freqs[sl] < 1)
-#     keep[sl] = k
-
-#     # --- per-individual singleton counts by bin ---
-#     ac = dosage.sum(axis=1, dtype=np.int32)
-#     bin_idx = np.searchsorted(BINS, ages[sl], side="right") - 1
-
-#     sing = (ac == 1) & k
-#     if sing.any():
-#         carrier = dosage[sing].argmax(axis=1)
-#         flat = carrier * N_BINS + bin_idx[sing]
-#         sing_counts += np.bincount(
-#             flat, minlength=N_IND * N_BINS
-#         ).reshape(N_IND, N_BINS)
-
-#     # --- write and accumulate ---
-#     append_bed_chunk(bed_f, dosage[k], N_IND)
-#     g += dosage[k].T.astype(np.float64) @ beta[sl][k]
-
-#     print(f"  {start/1e6:6.0f}-{end/1e6:<6.0f} Mb  {n_c:7d} sites  "
-#           f"{k.sum():7d} kept", flush=True)
-
-#     del dosage, tabs, sub, k, ac, bin_idx, sing
-#     offset += n_c
-#     start = end
+YOUNG_MAX = 205.0        # 2T12 growth onset; older singletons are a separate regime
 
 
-# bed_f.close()
-# assert offset == M_RAW, f"site count mismatch: {offset} != {M_RAW}"
+def count_by_bin(bins):
+    """Per-individual singleton counts for a given set of bin edges."""
+    idx = np.searchsorted(bins, sing_ages, side="right") - 1
+    nb = len(bins) - 1
+    counts = np.bincount(
+        carrier * nb + idx, minlength=N_IND * nb
+    ).reshape(N_IND, nb)
+    labels = [
+        f"{lo:.0f}+" if np.isinf(hi) else f"{lo:.0f}-{hi:.0f}"
+        for lo, hi in zip(bins[:-1], bins[1:])
+    ]
+    return pd.DataFrame(counts, columns=labels)
 
-# iids = [f"ind{i}" for i in range(N_IND)]
-# write_bim_fam(GENOME_PREFIX, positions[keep], ref[keep], alt[keep], iids)
 
-# print(f"\nAge range:  {ages.min():.1f} - {ages.max():.1f} generations")
-# print(f"Freq range: {freqs.min():.3g} - {freqs.max():.3g}")
-# print(f"Retained:   {keep.sum()} of {M_RAW} "
-#       f"({M_RAW - keep.sum()} monomorphic in sample)", flush=True)
+a = sing_ages[sing_ages < YOUNG_MAX]
 
+for nb in [1, 2, 3, 4, 6]:
+    q = np.quantile(a, np.linspace(0, 1, nb + 1))
+    q[0], q[-1] = 0.0, YOUNG_MAX
+    bins = np.concatenate([q, [np.inf]])          # + one catch-all for old
 
-# bin_labels = [
-#     f"{lo:.0f}+" if np.isinf(hi) else f"{lo:.0f}-{hi:.0f}"
-#     for lo, hi in zip(BINS[:-1], BINS[1:])
-# ]
+    df = count_by_bin(bins)
+    out = SIM_PATH_REP / f"{SIM_VERSION}_singleton_counts_nb{nb}.csv"
+    df.to_csv(out, index=False)
 
-# pd.DataFrame(sing_counts, columns=bin_labels).to_csv(
-#     SIM_PATH_REP / f"{SIM_VERSION}_singleton_counts.csv", index=False)
-
-# print(f"\n{'Bin':<20}{'n_sing':>10}{'mean c_i':>10}{'CV':>8}{'var/mean':>10}")
-# for b, label in enumerate(bin_labels):
-#     c = sing_counts[:, b]
-#     m = c.mean()
-#     cv = c.std() / m if m > 0 else np.nan
-#     vm = c.var() / m if m > 0 else np.nan
-#     print(f"{label:<20}{c.sum():>10}{m:>10.2f}{cv:>8.3f}{vm:>10.2f}")
+    print(f"\nnb={nb}  edges={np.round(q, 1)}  -> {out.name}")
+    print(f"{'Bin':<18}{'n_sing':>10}{'mean':>9}{'n_eff':>9}{'frac0':>8}")
+    for lab in df.columns:
+        c = df[lab].to_numpy(float)
+        if c.sum() == 0:
+            continue
+        n_eff = c.sum() ** 2 / (c ** 2).sum()
+        print(f"{lab:<18}{int(c.sum()):>10}{c.mean():>9.1f}"
+              f"{n_eff:>9.0f}{(c == 0).mean():>8.3f}")
 
 
 # # =================================================================
 # # 4. Phenotype: y = g + e, scaled to the target heritability
 # # =================================================================
-# g -= g.mean()
-# var_g = g.var()
-# sigma_e = np.sqrt(var_g * (1 - H2) / H2)
-# y = g + rng_noise.normal(0, sigma_e, size=N_IND)
 
-# print(f"\nvar(g)={var_g:.4g}  sigma_e={sigma_e:.4g}  "
-#       f"realised h2={var_g / y.var():.3f}", flush=True)
+N_COMMON = 20_000     # we want to use N common variants
+SIGMA_B_SING = 1.0    # same sigma for the betas as before
+H2_SING = 0.10        # variance share from singletons
+H2_COMMON = 0.40      # variance share from common variants
+N_COMMON = 20_000
+OVERSAMPLE = 50          # tune once you know the common fraction
 
+# --- singleton contribution (from the table pass, no genotypes) ---
+beta_sing = rng_beta.normal(0, SIGMA_B_SING, size=sing.sum())
+g_sing = np.bincount(carrier, weights=beta_sing, minlength=N_IND)
+
+# --- pick common variants and pull only those columns ---
+cand = rng_causal.choice(ts.num_sites, size=N_COMMON * OVERSAMPLE, replace=False)
+cand.sort()
+
+var = tskit.Variant(ts)
+i=0
+keep_sites, keep_gt = [], []
+for site_id in cand:
+    var.decode(int(site_id))
+    d = var.genotypes.reshape(-1, 2).sum(axis=1)
+    p = d.mean() / 2
+    if 0.05 < p < 0.95:
+        i+=1
+        if i % 100 == 0:
+            print(i)
+        keep_sites.append(site_id)
+        keep_gt.append(d.astype(np.uint8))
+        if len(keep_sites) == N_COMMON:
+            break
+
+Gc = np.array(keep_gt)
+picked = np.array(keep_sites)
+
+p = Gc.mean(axis=1) / 2
+Z = (Gc - 2 * p[:, None]) / np.sqrt(2 * p * (1 - p))[:, None]
+beta_common = rng_beta.normal(0, 1, size=len(picked))
+g_common = Z.T @ beta_common
+
+g_sing_bin = np.zeros((N_IND, N_BINS))
+for b in range(N_BINS):
+    m = bin_idx == b
+    if m.any():
+        g_sing_bin[:, b] = np.bincount(
+            carrier[m], weights=beta_sing[m], minlength=N_IND)
+
+g_sing = g_sing_bin.sum(axis=1)
+
+# --- scale each to its target share, then add noise ---
+scale_sing = np.sqrt(H2_SING / g_sing.var())
+g_sing_bin *= scale_sing
+g_sing     *= scale_sing
+
+g_common *= np.sqrt(H2_COMMON / g_common.var())
+g = g_sing + g_common
+g -= g.mean()
+y = g + rng_noise.normal(0, np.sqrt(1 - H2_SING - H2_COMMON), size=N_IND)
+
+
+print(f"var(g_sing)={g_sing.var():.4f}  var(g_common)={g_common.var():.4f}  "
+      f"var(y)={y.var():.4f}")
+
+g -= g.mean()
+var_g = g.var()
+sigma_e = np.sqrt(var_g * (1 - H2) / H2)
+y = g + rng_noise.normal(0, sigma_e, size=N_IND)
+
+print(f"\nvar(g)={var_g:.4g}  sigma_e={sigma_e:.4g}  "
+      f"realised h2={var_g / y.var():.3f}", flush=True)
 
 # # =================================================================
 # # 5. Ground truth: V_M and V_A
 # # =================================================================
-# u_causal = MU * PI_CAUSAL * L                 # causal mutations per generation
-# V_M_true = 2 * u_causal * SIGMA_BETA**2
-# V_A_empirical = np.sum(2 * freqs * (1 - freqs) * beta**2)
+bin_labels = [
+    f"{lo:.0f}+" if np.isinf(hi) else f"{lo:.0f}-{hi:.0f}"
+    for lo, hi in zip(BINS[:-1], BINS[1:])
+]
 
-# print(f"\nV_M (true, analytic):            {V_M_true:.4g}")
-# print(f"V_A (empirical, sum 2pq*beta^2): {V_A_empirical:.4g}")
-# print(f"Implied T = V_A / V_M:           {V_A_empirical / V_M_true:.4g} generations",
-#       flush=True)
+print(f"\n{'Bin':<20}{'n_sing':>10}{'V_true':>12}{'share':>9}")
+for b, label in enumerate(bin_labels):
+    if sing_counts[:, b].sum() == 0:
+        continue
+    V_b = g_sing_bin[:, b].var()
+    print(f"{label:<20}{sing_counts[:, b].sum():>10}{V_b:>12.5f}"
+          f"{V_b / H2_SING:>9.3f}")
 
+print(f"\nvar(g_sing)  = {g_sing.var():.4f}  (target {H2_SING})")
+print(f"var(g_common)= {g_common.var():.4f}  (target {H2_COMMON})")
+print(f"var(y)       = {y.var():.4f}")
 
-# N_BINS = len(BINS) - 1
-# sing_counts = np.zeros((N_IND, N_BINS), dtype=np.int32)   # c_i^(t)
-# all_counts  = np.zeros((N_IND, N_BINS), dtype=np.int32)   # optional: all variants
 
 # # =================================================================
 # # 6. Singleton Counts
 # # =================================================================
 
-# ac = np.round(freqs * ts.num_samples).astype(int)
-# sing = (ac == 1) & keep
+young = ages_all[sing] < 205
+a = ages_all[sing][young]
 
-# bin_idx = np.searchsorted(BINS, ages, side="right") - 1
+for nb in [2, 3, 4]:
+    q = np.quantile(a, np.linspace(0, 1, nb + 1))
+    q[0], q[-1] = 0, 205
+    print(nb, np.round(q, 1))
 
-# print(f"\n{'Bin (gens)':<20}{'n_variants':>12}{'n_singleton':>13}{'sing_frac':>11}")
-# for b, (lo, hi) in enumerate(zip(BINS[:-1], BINS[1:])):
-#     m = (bin_idx == b) & keep
-#     n_var = m.sum()
-#     n_sing = (m & sing).sum()
-#     if n_var == 0:
-#         continue
-#     label = f"{lo:.0f}+" if np.isinf(hi) else f"{lo:.0f}-{hi:.0f}"
-#     print(f"{label:<20}{n_var:>12}{n_sing:>13}{n_sing/n_var:>11.3f}")
+BINS = np.concatenate([q, [np.inf]])
 
-# print(f"\nTotal: {keep.sum()} variants, {sing.sum()} singletons "
-#       f"({sing.sum()/keep.sum():.3f})")
 
 # # =================================================================
 # # 7. True per-bin genetic variance
 # # =================================================================
-# rows = []
-# print(f"\n{'Bin (gens)':<20}{'n':>9}{'n_eff':>10}{'V_observed':>13}{'share':>9}")
-# for lo, hi in zip(BINS[:-1], BINS[1:]):
-#     m = (ages >= lo) & (ages < hi)
-#     if not m.any():
-#         continue
-#     contribs = 2 * freqs[m] * (1 - freqs[m]) * beta[m]**2
-#     V_bin = contribs.sum()
-#     ss = (contribs**2).sum()
-#     n_eff = V_bin**2 / ss if ss > 0 else 0.0   # Kish effective n
 
-#     label = f"{lo:.0f}+" if np.isinf(hi) else f"{lo:.0f}-{hi:.0f}"
-#     print(f"{label:<20}{m.sum():>9}{n_eff:>10.1f}{V_bin:>13.4g}"
-#           f"{V_bin / V_A_empirical:>9.3f}")
+rows = []
+print(f"\n{'Bin (gens)':<20}{'n':>9}{'n_eff':>10}{'V_observed':>13}{'share':>9}")
+for lo, hi in zip(BINS[:-1], BINS[1:]):
+    m = (ages >= lo) & (ages < hi)
+    if not m.any():
+        continue
+    contribs = 2 * freqs[m] * (1 - freqs[m]) * beta[m]**2
+    V_bin = contribs.sum()
+    ss = (contribs**2).sum()
+    n_eff = V_bin**2 / ss if ss > 0 else 0.0   # Kish effective n
 
-#     rows.append({
-#         "bin_lo": lo, "bin_hi": hi, "n_variants": int(m.sum()),
-#         "n_eff": n_eff, "V_observed": V_bin,
-#         "true_share": V_bin / V_A_empirical,
-#     })
+    label = f"{lo:.0f}+" if np.isinf(hi) else f"{lo:.0f}-{hi:.0f}"
+    print(f"{label:<20}{m.sum():>9}{n_eff:>10.1f}{V_bin:>13.4g}"
+          f"{V_bin / V_A_empirical:>9.3f}")
 
-# pd.DataFrame(rows).to_csv(
-#     SIM_PATH_REP / f"{SIM_VERSION}_bin_truth.csv", index=False)
+    rows.append({
+        "bin_lo": lo, "bin_hi": hi, "n_variants": int(m.sum()),
+        "n_eff": n_eff, "V_observed": V_bin,
+        "true_share": V_bin / V_A_empirical,
+    })
 
+pd.DataFrame(rows).to_csv(
+    SIM_PATH_REP / f"{SIM_VERSION}_bin_truth.csv", index=False)
 
-# # =================================================================
-# # 8. GENIE annotation matrix (row i aligns with row i of the .bim)
-# # =================================================================
-# bin_labels = [
-#     f"{lo:.0f}+" if np.isinf(hi) else f"{lo:.0f}-{hi:.0f}"
-#     for lo, hi in zip(BINS[:-1], BINS[1:])
-# ]
-# bins_all = pd.cut(ages, bins=BINS, labels=bin_labels, right=False)
+# =================================================================
+# 9. Variant info and phenotypes
+# =================================================================
+pd.DataFrame({
+    "site_id": np.arange(M_RAW),
+    "position": positions,
+    "age": ages,
+    "bin": bins_all,
+    "freq": freqs,
+    "beta": beta,
+    "causal": causal,
+    "kept": keep,
+}).to_csv(SIM_PATH_REP / f"{SIM_VERSION}_variant_info.csv", index=False)
 
-# annotations = pd.get_dummies(
-#     bins_all[keep], prefix="bin", prefix_sep="_"
-# ).reindex(columns=[f"bin_{b}" for b in bin_labels], fill_value=0).astype(int)
+iids = [f"ind{i}" for i in range(N_IND)]
 
-# assert len(annotations) == keep.sum(), "annotation rows != retained variants"
-# assert (annotations.sum(axis=1) == 1).all(), "each variant must fall in exactly one bin"
+pd.DataFrame({"FID": 0, "IID": iids, "PHENO": y}).to_csv(
+    SIM_PATH_REP / f"{SIM_VERSION}_phenotypes.GENIE.txt",
+    sep="\t", index=False,
+)
+pd.DataFrame({"iid": iids, "y": y, "g": g}).to_csv(
+    SIM_PATH_REP / f"{SIM_VERSION}_phenotypes.csv", index=False)
 
-# annotations.to_csv(
-#     SIM_PATH_REP / f"{SIM_VERSION}_annotations_age_bins.txt",
-#     sep=" ", index=False, header=False,
-# )
-# pd.DataFrame({"column_name": annotations.columns, "age_bin": bin_labels}).to_csv(
-#     SIM_PATH_REP / f"{SIM_VERSION}_annotations_legend.txt", sep=" ", index=False,
-# )
-
-# # =================================================================
-# # 9. Variant info and phenotypes
-# # =================================================================
-# pd.DataFrame({
-#     "site_id": np.arange(M_RAW),
-#     "position": positions,
-#     "age": ages,
-#     "bin": bins_all,
-#     "freq": freqs,
-#     "beta": beta,
-#     "causal": causal,
-#     "kept": keep,
-# }).to_csv(SIM_PATH_REP / f"{SIM_VERSION}_variant_info.csv", index=False)
-
-# pd.DataFrame({"FID": 0, "IID": iids, "PHENO": y}).to_csv(
-#     SIM_PATH_REP / f"{SIM_VERSION}_phenotypes.GENIE.txt",
-#     sep="\t", index=False,
-# )
-# pd.DataFrame({"iid": iids, "y": y, "g": g}).to_csv(
-#     SIM_PATH_REP / f"{SIM_VERSION}_phenotypes.csv", index=False)
-
-# print(f"\nWrote outputs to {SIM_PATH_REP}", flush=True)
+print(f"\nWrote outputs to {SIM_PATH_REP}", flush=True)

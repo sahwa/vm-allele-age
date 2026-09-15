@@ -1,22 +1,31 @@
+f = glue::glue
+
+VERSION = "1.2.1"
+REP = 0
+
 source("/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/programs/diagGREML.R")
-DATA="/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v1.2/replicates/rep0"
-FIGS = "/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/figs/v1.2"
+DATA=f("/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v{VERSION}/replicates/rep{REP}")
+FIGS = f("/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/figs/v{VERSION}")
+pheno = fread(file.path(DATA, f("{VERSION}_phenotypes.csv")), header=T)
+
+sets = c(1:6)[-5]
+
+res = purrr::map(sets, function(x) {
+    C <- fread(file.path(DATA, f("{VERSION}_singleton_counts_nb{x}.csv")), header=T)
+    A <- lapply(C, function(x) x / mean(x))
+    X <- matrix(1, nrow = nrow(C), ncol = 1)
+    fit <- fit_diagGREML(y = pheno$y, A = A, X = X,
+                     constraint = FALSE, magic0316 = TRUE)
+    data.table(
+        comp = fit$Vlistnames,
+        est = fit$varcmp,
+        se = sqrt(diag(fit$Hi)),
+        n_comp = x
+    )
+})
 
 
-C <- fread(file.path(DATA, "1.2_singleton_counts.csv"))
-pheno = fread(file.path(DATA, "1.2_phenotypes.csv"))
 
-bins <- names(C)
-
-A <- c(
-  lapply(bins[1:3], function(b) C[[b]]),
-  list(old = rowSums(C[, bins[4:8], with = FALSE]))
-)
-
-A <- lapply(A, function(x) x / mean(x))
-
-names(A) <- c(bins[1:3], "old")
-X <- matrix(1, nrow = nrow(C), ncol = 1)
 
 fit <- fit_diagGREML(y = pheno$y, A = A, X = X,
                      constraint = FALSE, magic0316 = TRUE)
