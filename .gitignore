@@ -21,7 +21,7 @@ __pycache__/
 *err
 *out
 
-# figures 
+# figures
 *png
 *pdf
 
@@ -31,3 +31,5 @@ __pycache__/
 .Rproj.user/
 
 simulations/data/*
+simulations/programs/ConvertGCTA-GRM_to_MPH-GRM
+simulations/programs/mph
