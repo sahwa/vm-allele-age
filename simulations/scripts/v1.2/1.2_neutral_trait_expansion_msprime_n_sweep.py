@@ -69,8 +69,8 @@ def scale_eur_final_size(base_demog, target_final):
         time=0, population=POP, initial_size=target_final,
         growth_rate=EUR_GROWTH_RATE,
     )
+    d.sort_events()
     return d
-
 
 species = stdpopsim.get_species("HomSap")
 base = species.get_demographic_model(DEMOG_MODEL).model

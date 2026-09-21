@@ -1,48 +1,58 @@
-// updated from version 2.0:
-// [1]: Just update the genome length from 1e8 -> 5e8
-// [2]: Drop back down to 25K individuals 
-// [3]: Move up to 375K ticks so hoping most of the trees 
-//        will coalesce
+// v2.1 — Gaussian stabilising selection on an additive trait.
+//   [1] L: 1e8 -> 5e8
+//   [2] NE: 25K
+//   [3] END_TICK = 15 * NE
+//   [4] fixed mutations -> substitutions, phenotypic offset tracked explicitly
+//   [5] checkpoints every CKPT_EVERY ticks; resume via RESUME
+
 initialize() {
+    if (!exists("RESUME"))     defineConstant("RESUME", "");
+    if (!exists("CKPT_EVERY")) defineConstant("CKPT_EVERY", 10000);
     defineConstant("start_time", clock());
+
     initializeTreeSeq();
     initializeMutationRate(MU * PI_TARGET);
     initializeRecombinationRate(1e-8);
-    initializeMutationType("m2", 0.5, "n", 0.0, 0.1);  // effect sizes ~ N(0, 0.1)
-    m2.convertToSubstitution = F;
+    initializeMutationType("m2", 0.5, "n", 0.0, 0.1);   // effects ~ N(0, 0.1^2)
+    m2.convertToSubstitution = T;
     initializeGenomicElementType("g2", m2, 1);
-    initializeGenomicElement(g2, 0, L-1);
+    initializeGenomicElement(g2, 0, L - 1);
 }
 
-mutationEffect(m2) { return 1.0; }   // neutral at the locus level
+mutationEffect(m2) { return 1.0; }        // neutral at the locus level
 
 fitnessEffect() {
-    phenotype = individual.sumOfMutationsOfType(m2);
+    phenotype = individual.sumOfMutationsOfType(m2) + FIXED_OFFSET;
     return exp(-(phenotype^2) / (2 * V_S));
 }
 
-1 early() { sim.addSubpop("p1", NE); }
-
-1: late() {
-    if (community.tick % 1000 == 0) {
-        elapsed = clock() - start_time;
-        gen_per_sec = community.tick / elapsed;
-        remaining_gens = END_TICK - community.tick;
-        remaining_secs = remaining_gens / gen_per_sec;
-
-        inds = sim.subpopulations.individuals;
-        phenotypes = inds.sumOfMutationsOfType(m2);
-
-        cat("Tick " + community.tick + " / " + END_TICK
-            + "  V_P: " + format("%.4f", var(phenotypes))
-            + "  (" + format("%.0f", elapsed) + "s elapsed, "
-            + format("%.0f", remaining_secs) + "s remaining)\n");
+1 early() {
+    if (RESUME != "") {
+        sim.readFromPopulationFile(RESUME);
+        catn("Resumed from " + RESUME + " at tick " + community.tick);
+    } else {
+        sim.addSubpop("p1", NE);
     }
+    defineGlobal("FIXED_OFFSET", 2 * sum(sim.substitutions.selectionCoeff));
 }
 
-50000:375000 late() {
-    if (community.tick % 50000 == 0) {
-        sim.treeSeqOutput(outfile + ".tick" + community.tick);
+1: late() {
+    // must run before fitness recalculation at the end of the tick
+    defineGlobal("FIXED_OFFSET", 2 * sum(sim.substitutions.selectionCoeff));
+
+    if (community.tick % 1000 == 0) {
+        elapsed = clock() - start_time;
+        inds = sim.subpopulations.individuals;
+        z = inds.sumOfMutationsOfType(m2) + FIXED_OFFSET;
+        cat("Tick " + community.tick + " / " + END_TICK
+            + "  mean_z: " + format("%.3f", mean(z))
+            + "  V_G: " + format("%.4f", var(z))
+            + "  n_subs: " + size(sim.substitutions)
+            + "  (" + format("%.0f", elapsed) + "s)\n");
+    }
+
+    if (community.tick % CKPT_EVERY == 0 & community.tick < END_TICK) {
+        sim.treeSeqOutput(outfile + ".tick" + community.tick + ".trees");
         catn("Checkpoint at tick " + community.tick);
     }
 }
