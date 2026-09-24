@@ -39,7 +39,7 @@ MU = 1.25e-8                  # per-bp per-generation mutation rate
 REC = 1e-8                    # per-bp per-generation recombination rate
 
 # Trait
-H2 = 0.5                      # target narrow-sense heritability
+H2_SING = 0.1                      # target narrow-sense heritability
 SIGMA_BETA = 1.0              # SD of causal effect sizes
 PI_CAUSAL = 0.01              # fraction of segregating sites that are causal
 
@@ -68,95 +68,14 @@ rng_noise = np.random.default_rng(seed_noise)
 
 
 # =================================================================
-# Demography
-# =================================================================
-def scale_final_size(base_demog, pop, target_final, growth_rate):
-    """Rebase a population's present-day size, keeping its growth rate."""
-    d = copy.deepcopy(base_demog)
-    d.add_population_parameters_change(
-        time=0, population=pop, initial_size=target_final, growth_rate=growth_rate
-    )
-    return d
-
-
-# =================================================================
-# PLINK .bed streaming writer
-# =================================================================
-def open_bed(prefix):
-    f = open(f"{prefix}.bed", "wb")
-    f.write(bytes([0x6C, 0x1B, 0x01]))       # magic + SNP-major
-    return f
-
-
-def append_bed_chunk(f, dosages, n_ind, block_size=2000):
-    """
-    Append variants to an open SNP-major .bed.
-
-    dosages : (n_var, n_ind) uint8, ALT allele count 0/1/2.
-    A1 = ALT, A2 = REF (matches `plink2 --vcf` default orientation).
-    Encoding: 00 hom-A1, 01 missing, 10 het, 11 hom-A2
-              -> dosage 2 -> 0, dosage 1 -> 2, dosage 0 -> 3
-    """
-    n_var = dosages.shape[0]
-    if n_var == 0:
-        return
-    n_bytes = (n_ind + 3) // 4
-    pad = n_bytes * 4 - n_ind
-    lut = np.array([3, 2, 0], dtype=np.uint8)
-
-    for s in range(0, n_var, block_size):
-        block = lut[dosages[s:s + block_size]]
-        if pad:
-            block = np.pad(block, ((0, 0), (0, pad)))
-        block = block.reshape(block.shape[0], n_bytes, 4)
-        packed = (
-            block[:, :, 0]
-            | (block[:, :, 1] << 2)
-            | (block[:, :, 2] << 4)
-            | (block[:, :, 3] << 6)
-        ).astype(np.uint8)
-        packed.tofile(f)
-
-
-def write_bim_fam(prefix, positions, ref, alt, iids, chrom=1):
-    snp_ids = [f"{chrom}:{int(p)}:{r}:{a}" for p, r, a in zip(positions, ref, alt)]
-    pd.DataFrame({
-        "chr": chrom, "snpid": snp_ids, "cm": 0,
-        "pos": positions.astype(np.int64), "a1": alt, "a2": ref,
-    }).to_csv(f"{prefix}.bim", sep="\t", index=False, header=False)
-
-    pd.DataFrame({
-        "fid": 0, "iid": iids, "pid": 0, "mid": 0, "sex": 0, "pheno": -9,
-    }).to_csv(f"{prefix}.fam", sep="\t", index=False, header=False)
-
-
-# =================================================================
-# 1. Simulate (or load cached)
+# 1. Load caches and strip out any multi-allelics
 # =================================================================
 if TREE_FILE.is_file():
     print(f"Loading cached tree sequence: {TREE_FILE}", flush=True)
     ts = tskit.load(str(TREE_FILE))
 else:
-    species = stdpopsim.get_species("HomSap")
-    base = species.get_demographic_model(DEMOG_MODEL).model
-    demog = scale_final_size(base, POP, N_FINAL_TARGET, EUR_GROWTH_RATE)
-
-    print(f"Simulating ancestry: {N_SAMPLE} diploids, {L/1e6:.0f} Mb...", flush=True)
-    ts = msprime.sim_ancestry(
-        samples={POP: N_SAMPLE},
-        demography=demog,
-        sequence_length=L,
-        recombination_rate=REC,
-        model=[
-            msprime.DiscreteTimeWrightFisher(duration=100),
-            msprime.StandardCoalescent(),
-        ],
-        random_seed=RNG_SEED,
-    )
-    print("Overlaying mutations...", flush=True)
-    ts = msprime.sim_mutations(ts, rate=MU, random_seed=RNG_SEED)
-    ts.dump(str(TREE_FILE))
-    print(f"Saved: {TREE_FILE}", flush=True)
+    print(f"Tree doesn't exist. Exiting.....")
+    exit()
 
 multiallelic_site_ids = np.array(
     [site.id for site in ts.sites() if len(site.mutations) > 1]
@@ -180,109 +99,49 @@ assert ts.num_mutations == M_RAW, (
 )
 print(f"{M_RAW} sites, {N_IND} diploids", flush=True)
 
+tabs = ts.tables
+mut_node = tabs.mutations.node                  # node each mutation sits above
+
+is_sample = np.zeros(ts.num_nodes, dtype=bool)
+is_sample[ts.samples()] = True
+sing = is_sample[mut_node]                      # singleton iff on a sample node
+carrier = tabs.nodes.individual[mut_node[sing]] # node -> individual ID
+
 # =================================================================
 # 2. Effect sizes (neutral trait: beta independent of age and frequency)
 # =================================================================
-causal = rng_causal.random(M_RAW) < PI_CAUSAL
+afs = ts.allele_frequency_spectrum(polarised = True, span_normalise = False)
+n_sing, n_sites = int(afs[1]), ts.num_sites
+
+mut_time = ts.tables.mutations.time
+site_of_mut = ts.tables.mutations.site
+counts = np.bincount(site_of_mut, minlength=ts.num_sites)
+
+ok = counts == 1
+ac = np.array([v.genotypes.sum() for v in ts.variants()])
+sing_sites = ok & (ac == 1)
+M_SING = sing_sites.sum()
+# ages = mut_time[np.isin(site_of_mut, np.flatnonzero(sing_sites))]
+
+causal = rng_causal.random(M_SING) < PI_CAUSAL
 beta = np.zeros(M_RAW)
-beta[causal] = rng_beta.normal(0, SIGMA_BETA, size=causal.sum())
-print(f"{causal.sum()} causal variants ({causal.mean():.3%})", flush=True)
+SIGMA2_B = H2_SING * N_IND / M_RAW    # from n=200k, L=1e9, say
+beta_sing = rng_beta.normal(0, np.sqrt(SIGMA2_B), size=len(carrier))
+g_sing = np.bincount(carrier, weights=beta_sing, minlength=N_IND)
+g_sing -= g_sing.mean()
+
+V_A_ref = g_sing.var()
+SIGMA2_E = V_A_ref - (1-H2_SING / H2_SING)
+
+y = g_sing + rng_noise.normal(0, np.sqrt(SIGMA2_E), size=N_IND)
+np.bincount(carrier, weights=BETA_SING)
 
 # =================================================================
 # 3. Streaming pass: pack .bed, accumulate genetic values, collect metadata
 # =================================================================
-ages = np.empty(M_RAW)
-freqs = np.empty(M_RAW)
-positions = np.empty(M_RAW)
-ref = np.empty(M_RAW, dtype="<U1")
-alt = np.empty(M_RAW, dtype="<U1")
-keep = np.zeros(M_RAW, dtype=bool)
-
-N_BINS = len(BINS) - 1
-sing_counts = np.zeros((N_IND, N_BINS), dtype=np.int32)   # c_i^(t)
-all_counts  = np.zeros((N_IND, N_BINS), dtype=np.int32)   # optional: all variants
-
-g = np.zeros(N_IND)                      # genetic value, accumulated per chunk
-bed_f = open_bed(GENOME_PREFIX)
-
-print(f"\nStreaming {M_RAW} sites in {CHUNK_BP/1e6:.0f} Mb chunks...", flush=True)
-offset, start = 0, 0.0
-while start < L:
-    end = min(start + CHUNK_BP, L)
-    sub = ts.keep_intervals([[start, end]], simplify=False)
-    n_c = sub.num_sites
-    if n_c == 0:
-        start = end
-        continue
-    sl = slice(offset, offset + n_c)
-
-    # --- genotypes ---
-    G = sub.genotype_matrix()
-    dosage = G.reshape(n_c, -1, 2).sum(axis=2).astype(np.uint8)
-    freqs[sl] = G.mean(axis=1)
-    del G
-
-    # --- metadata (must precede any use of ages[sl]) ---
-    tabs = sub.tables
-    mt = tabs.mutations.time
-    nt = tabs.nodes.time[tabs.mutations.node]
-    ages[sl] = np.where(np.isnan(mt), nt, mt)
-    positions[sl] = tabs.sites.position
-    ref[sl] = tskit.unpack_strings(
-        tabs.sites.ancestral_state, tabs.sites.ancestral_state_offset)
-    alt[sl] = tskit.unpack_strings(
-        tabs.mutations.derived_state, tabs.mutations.derived_state_offset)
-
-    # --- MAF mask (must precede any use of k) ---
-    k = (freqs[sl] > 0) & (freqs[sl] < 1)
-    keep[sl] = k
-
-    # --- per-individual singleton counts by bin ---
-    ac = dosage.sum(axis=1, dtype=np.int32)
-    bin_idx = np.searchsorted(BINS, ages[sl], side="right") - 1
-
-    sing = (ac == 1) & k
-    if sing.any():
-        carrier = dosage[sing].argmax(axis=1)
-        flat = carrier * N_BINS + bin_idx[sing]
-        sing_counts += np.bincount(
-            flat, minlength=N_IND * N_BINS
-        ).reshape(N_IND, N_BINS)
-
-    # --- write and accumulate ---
-    append_bed_chunk(bed_f, dosage[k], N_IND)
-    g += dosage[k].T.astype(np.float64) @ beta[sl][k]
-
-    print(f"  {start/1e6:6.0f}-{end/1e6:<6.0f} Mb  {n_c:7d} sites  "
-          f"{k.sum():7d} kept", flush=True)
-
-    del dosage, tabs, sub, k, ac, bin_idx, sing
-    offset += n_c
-    start = end
-
-
-bed_f.close()
-assert offset == M_RAW, f"site count mismatch: {offset} != {M_RAW}"
+g_sing = np.bincount(carrier, weights=BETA_SING, minlength=N_IND)
 
 iids = [f"ind{i}" for i in range(N_IND)]
-write_bim_fam(GENOME_PREFIX, positions[keep], ref[keep], alt[keep], iids)
-
-print(f"\nAge range:  {ages.min():.1f} - {ages.max():.1f} generations")
-print(f"Freq range: {freqs.min():.3g} - {freqs.max():.3g}")
-print(f"Retained:   {keep.sum()} of {M_RAW} "
-      f"({M_RAW - keep.sum()} monomorphic in sample)", flush=True)
-
-
-np.save(SIM_PATH_REP / f"{SIM_VERSION}_singleton_counts.npy", sing_counts)
-
-print(f"\n{'Bin':<20}{'n_sing':>10}{'mean c_i':>10}{'CV':>8}")
-
-for b, (lo, hi) in enumerate(zip(BINS[:-1], BINS[1:])):
-    c = sing_counts[:, b]
-    label = f"{lo:.0f}+" if np.isinf(hi) else f"{lo:.0f}-{hi:.0f}"
-    cv = c.std() / c.mean() if c.mean() > 0 else np.nan
-    print(f"{label:<20}{c.sum():>10}{c.mean():>10.1f}{cv:>8.3f}")
-
 
 # =================================================================
 # 4. Phenotype: y = g + e, scaled to the target heritability
