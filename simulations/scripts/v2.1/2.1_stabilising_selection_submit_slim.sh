@@ -48,7 +48,7 @@ NE=25000
 
 # find the treee with the highest tick count
 
-treefile=$(ls ${DATA}/2.1_stabilising_selection_VS_${VS}_NE_${NE}.tick*.trees | sort -V | tail -n1)
+treefile=$(ls ${DATA}/2.1_stabilising_selection_VS_${V_S}_NE_${NE}.tick*.trees | sort -V | tail -n1)
 outfile=$(echo $treefile | sed 's/.trees/.biallelic.recapitated.trees/g')
 
 micromamba run -n slim python 2.1_stabilising_selection_process_msprime_recapitate.py \

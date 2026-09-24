@@ -1,270 +1,161 @@
 #!/usr/bin/env python
 """
-v1.2 — neutral trait under Tennessen-style European expansion.
+Singleton phenotype generation for the diagGREML sweep.
 
-Simulates a neutral polygenic trait on an msprime tree sequence, bins variants
-by true allele age, and writes a PLINK fileset + GENIE annotation matrix.
+For one (n, L) cell, sweeps over selection strength S and writes, per S:
+  - per-individual phenotype
+  - per-individual singleton counts by age bin
+  - true per-bin genetic variance
 
-Memory note: the genotype matrix is never held in full. Variants are streamed in
-genomic chunks; each chunk is packed straight into the .bed file and its
-contribution to each individual's genetic value is accumulated on the fly.
-Only per-variant metadata (O(M) floats) and per-individual vectors (O(N)) persist.
+Effects are drawn per singleton with variance SIGMA2_B_REF * exp(-S * age).
+SIGMA2_B_REF and SIGMA2_E are fixed from a reference cell so realised h2
+varies across the sweep rather than being pinned.
 """
 
-import copy
+import argparse
+import json
 from pathlib import Path
 
-import msprime
 import numpy as np
 import pandas as pd
-import stdpopsim
 import tskit
 
 # =================================================================
-# Configuration
+# 0. Configuration
 # =================================================================
-SIM_VERSION = "1.2"
-SIM_TYPE = "neutral_trait_expansion"
-REP = 0
-RNG_SEED = 42
+p = argparse.ArgumentParser()
+p.add_argument("--tree", required=True, help="msprime .trees for this cell")
+p.add_argument("--ref-json", required=True, help="reference_constants.json")
+p.add_argument("--out-dir", required=True)
+p.add_argument("--rep", type=int, default=0)
+p.add_argument("--seed", type=int, default=42)
+p.add_argument("--mu", type=float, default=1.25e-8)
+args = p.parse_args()
 
-# Demography / simulation
-DEMOG_MODEL = "OutOfAfrica_2T12"
-POP = "EUR"
-N_FINAL_TARGET = 500_000      # present-day EUR size (calibrated to UKB singleton frac)
-EUR_GROWTH_RATE = 0.0195      # from the base model; kept when rescaling the endpoint
-N_SAMPLE = 20_000             # diploids drawn as samples
-L = 1e8                       # sequence length (bp)
-MU = 1.25e-8                  # per-bp per-generation mutation rate
-REC = 1e-8                    # per-bp per-generation recombination rate
+S_VALUES = [0.0, 1e-4, 3e-4, 1e-3, 3e-3, 1e-2]
+BINS = np.concatenate([[0.0], np.geomspace(1, 205, 7), [np.inf]])
 
-# Trait
-H2_SING = 0.1                      # target narrow-sense heritability
-SIGMA_BETA = 1.0              # SD of causal effect sizes
-PI_CAUSAL = 0.01              # fraction of segregating sites that are causal
+OUT = Path(args.out_dir)
+OUT.mkdir(parents=True, exist_ok=True)
 
-# Age bins (log-spaced; edges chosen to span the observed age range)
-BINS = np.concatenate([[0.0], np.geomspace(10, 1e6, 9), [np.inf]])
-
-# Streaming
-CHUNK_BP = 8e6                # genomic window per chunk; tune to available RAM
-
-# Paths
-SIM_PATH = Path(
-    "/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data"
-) / f"v{SIM_VERSION}"
-SIM_PATH_REP = SIM_PATH / "replicates" / f"rep{REP}"
-SIM_PATH_REP.mkdir(parents=True, exist_ok=True)
-
-TREE_FILE = SIM_PATH / f"{SIM_VERSION}_{SIM_TYPE}.recapitated.trees"
-GENOME_PREFIX = SIM_PATH_REP / f"{SIM_VERSION}_{SIM_TYPE}"
-
-# RNG streams — independent and reproducible per replicate
-_ss = np.random.SeedSequence([RNG_SEED, REP])
-seed_beta, seed_causal, seed_noise = _ss.spawn(3)
-rng_beta = np.random.default_rng(seed_beta)
-rng_causal = np.random.default_rng(seed_causal)
-rng_noise = np.random.default_rng(seed_noise)
-
+with open(args.ref_json) as fh:
+    REF = json.load(fh)
+SIGMA2_B_REF = REF["SIGMA2_B_REF"]
+SIGMA2_E     = REF["SIGMA2_E"]
+print(f"Reference: SIGMA2_B={SIGMA2_B_REF:.6g}  SIGMA2_E={SIGMA2_E:.4g}",
+      flush=True)
 
 # =================================================================
-# 1. Load caches and strip out any multi-allelics
+# 1. Load and extract singletons from the tables
 # =================================================================
-if TREE_FILE.is_file():
-    print(f"Loading cached tree sequence: {TREE_FILE}", flush=True)
-    ts = tskit.load(str(TREE_FILE))
-else:
-    print(f"Tree doesn't exist. Exiting.....")
-    exit()
-
-multiallelic_site_ids = np.array(
-    [site.id for site in ts.sites() if len(site.mutations) > 1]
-)
-
-print(f"Removing {len(multiallelic_site_ids)} multiallelic sites "
-      f"out of {ts.num_sites}", flush=True)
-
-if len(multiallelic_site_ids) > 0:
-    tables = ts.dump_tables()
-    tables.delete_sites(multiallelic_site_ids)
-    tables.sort()
-    ts = tables.tree_sequence()
-print(f"mts now has {ts.num_sites} biallelic sites", flush=True)
-
+ts = tskit.load(args.tree)
 N_IND = ts.num_samples // 2
-M_RAW = ts.num_sites
-assert ts.num_mutations == M_RAW, (
-    "Multi-mutation sites present — table-column alignment below assumes "
-    "exactly one mutation per site."
-)
-print(f"{M_RAW} sites, {N_IND} diploids", flush=True)
+print(f"{ts.num_sites:,} sites, {N_IND:,} diploids, "
+      f"L = {ts.sequence_length:.0e}", flush=True)
 
 tabs = ts.tables
-mut_node = tabs.mutations.node                  # node each mutation sits above
+mut_node = tabs.mutations.node
 
 is_sample = np.zeros(ts.num_nodes, dtype=bool)
 is_sample[ts.samples()] = True
-sing = is_sample[mut_node]                      # singleton iff on a sample node
-carrier = tabs.nodes.individual[mut_node[sing]] # node -> individual ID
+sing = is_sample[mut_node]
 
-# =================================================================
-# 2. Effect sizes (neutral trait: beta independent of age and frequency)
-# =================================================================
-afs = ts.allele_frequency_spectrum(polarised = True, span_normalise = False)
-n_sing, n_sites = int(afs[1]), ts.num_sites
+carrier   = tabs.nodes.individual[mut_node[sing]]
+_mt       = tabs.mutations.time[sing]
+sing_ages = np.where(np.isnan(_mt), tabs.nodes.time[mut_node[sing]], _mt)
+M_SING    = int(sing.sum())
 
-mut_time = ts.tables.mutations.time
-site_of_mut = ts.tables.mutations.site
-counts = np.bincount(site_of_mut, minlength=ts.num_sites)
+assert (carrier >= 0).all(), "sample nodes not mapped to individuals"
+print(f"{M_SING:,} singletons  (mean {M_SING / N_IND:.1f} per person)", flush=True)
 
-ok = counts == 1
-ac = np.array([v.genotypes.sum() for v in ts.variants()])
-sing_sites = ok & (ac == 1)
-M_SING = sing_sites.sum()
-# ages = mut_time[np.isin(site_of_mut, np.flatnonzero(sing_sites))]
+P_SING  = 1.0 / ts.num_samples          # allele frequency of a singleton
+TWO_PQ  = 2 * P_SING * (1 - P_SING)
+N_BINS  = len(BINS) - 1
 
-causal = rng_causal.random(M_SING) < PI_CAUSAL
-beta = np.zeros(M_RAW)
-SIGMA2_B = H2_SING * N_IND / M_RAW    # from n=200k, L=1e9, say
-beta_sing = rng_beta.normal(0, np.sqrt(SIGMA2_B), size=len(carrier))
-g_sing = np.bincount(carrier, weights=beta_sing, minlength=N_IND)
-g_sing -= g_sing.mean()
+BIN_LABELS = [f"{lo:.0f}+" if np.isinf(hi) else f"{lo:.0f}-{hi:.0f}"
+              for lo, hi in zip(BINS[:-1], BINS[1:])]
+bin_idx = np.searchsorted(BINS, sing_ages, side="right") - 1
 
-V_A_ref = g_sing.var()
-SIGMA2_E = V_A_ref - (1-H2_SING / H2_SING)
+# per-individual singleton counts by bin (independent of S)
+sing_counts = np.bincount(
+    carrier * N_BINS + bin_idx, minlength=N_IND * N_BINS
+).reshape(N_IND, N_BINS)
+assert sing_counts.sum() == M_SING
 
-y = g_sing + rng_noise.normal(0, np.sqrt(SIGMA2_E), size=N_IND)
-np.bincount(carrier, weights=BETA_SING)
+pd.DataFrame(sing_counts, columns=BIN_LABELS).to_csv(
+    OUT / "singleton_counts.csv", index=False)
 
-# =================================================================
-# 3. Streaming pass: pack .bed, accumulate genetic values, collect metadata
-# =================================================================
-g_sing = np.bincount(carrier, weights=BETA_SING, minlength=N_IND)
+# V_M: mutations per generation x per-mutation effect variance
+V_M_TRUE = 2 * args.mu * ts.sequence_length * SIGMA2_B_REF
 
 iids = [f"ind{i}" for i in range(N_IND)]
 
 # =================================================================
-# 4. Phenotype: y = g + e, scaled to the target heritability
+# 2. Sweep over selection strength
 # =================================================================
-g -= g.mean()
-var_g = g.var()
-sigma_e = np.sqrt(var_g * (1 - H2) / H2)
-y = g + rng_noise.normal(0, sigma_e, size=N_IND)
+summary = []
 
-print(f"\nvar(g)={var_g:.4g}  sigma_e={sigma_e:.4g}  "
-      f"realised h2={var_g / y.var():.3f}", flush=True)
+for S in S_VALUES:
+    tag = f"S{S:.0e}"
+    rng = np.random.default_rng(
+        np.random.SeedSequence([args.seed, args.rep, int(S * 1e6)]))
+    rng_beta, rng_noise = (np.random.default_rng(s) for s in rng.spawn(2))
 
+    sd = np.sqrt(SIGMA2_B_REF * np.exp(-S * sing_ages))
+    beta_sing = rng_beta.normal(0.0, sd)
 
-# =================================================================
-# 5. Ground truth: V_M and V_A
-# =================================================================
-u_causal = MU * PI_CAUSAL * L                 # causal mutations per generation
-V_M_true = 2 * u_causal * SIGMA_BETA**2
-V_A_empirical = np.sum(2 * freqs * (1 - freqs) * beta**2)
+    g = np.bincount(carrier, weights=beta_sing, minlength=N_IND)
+    g -= g.mean()
+    y = g + rng_noise.normal(0, np.sqrt(SIGMA2_E), size=N_IND)
 
-print(f"\nV_M (true, analytic):            {V_M_true:.4g}")
-print(f"V_A (empirical, sum 2pq*beta^2): {V_A_empirical:.4g}")
-print(f"Implied T = V_A / V_M:           {V_A_empirical / V_M_true:.4g} generations",
-      flush=True)
+    var_g = g.var()
+    h2    = var_g / y.var()
+    V_A_emp = float(np.sum(TWO_PQ * beta_sing**2))
 
+    print(f"\n=== S = {S:.0e} ===")
+    print(f"var(g) = {var_g:.5g}   V_E = {SIGMA2_E:.4g}   realised h2 = {h2:.4f}")
+    print(f"V_A (sum 2pq*beta^2) = {V_A_emp:.5g}")
+    print(f"V_M (analytic)       = {V_M_TRUE:.5g}")
+    print(f"implied T = V_A/V_M  = {V_A_emp / V_M_TRUE:.4g} generations", flush=True)
 
-N_BINS = len(BINS) - 1
-sing_counts = np.zeros((N_IND, N_BINS), dtype=np.int32)   # c_i^(t)
-all_counts  = np.zeros((N_IND, N_BINS), dtype=np.int32)   # optional: all variants
+    # ---- true per-bin genetic variance ----
+    rows = []
+    print(f"\n{'Bin (gens)':<16}{'n_sing':>10}{'mean_beta2':>13}"
+          f"{'V_observed':>13}{'share':>9}")
+    for b, label in enumerate(BIN_LABELS):
+        m = bin_idx == b
+        if not m.any():
+            continue
+        contribs = TWO_PQ * beta_sing[m] ** 2
+        V_bin = contribs.sum()
+        ss = (contribs ** 2).sum()
+        n_eff = V_bin ** 2 / ss if ss > 0 else 0.0
+        mean_b2 = (beta_sing[m] ** 2).mean()
 
-# =================================================================
-# 6. Singleton Counts
-# =================================================================
+        print(f"{label:<16}{int(m.sum()):>10,}{mean_b2:>13.4g}"
+              f"{V_bin:>13.4g}{V_bin / V_A_emp:>9.3f}")
+        rows.append({
+            "S": S, "bin": label, "bin_lo": BINS[b], "bin_hi": BINS[b + 1],
+            "n_variants": int(m.sum()), "n_eff": n_eff,
+            "mean_beta2": mean_b2, "V_observed": V_bin,
+            "true_share": V_bin / V_A_emp,
+        })
 
-ac = np.round(freqs * ts.num_samples).astype(int)
-sing = (ac == 1) & keep
+    pd.DataFrame(rows).to_csv(OUT / f"bin_truth_{tag}.csv", index=False)
 
-bin_idx = np.searchsorted(BINS, ages, side="right") - 1
+    # ---- phenotypes ----
+    pd.DataFrame({"iid": iids, "y": y, "g": g}).to_csv(
+        OUT / f"phenotypes_{tag}.csv", index=False)
+    pd.DataFrame({"FID": 0, "IID": iids, "PHENO": y}).to_csv(
+        OUT / f"phenotypes_{tag}.GENIE.txt", sep="\t", index=False)
 
-print(f"\n{'Bin (gens)':<20}{'n_variants':>12}{'n_singleton':>13}{'sing_frac':>11}")
-for b, (lo, hi) in enumerate(zip(BINS[:-1], BINS[1:])):
-    m = (bin_idx == b) & keep
-    n_var = m.sum()
-    n_sing = (m & sing).sum()
-    if n_var == 0:
-        continue
-    label = f"{lo:.0f}+" if np.isinf(hi) else f"{lo:.0f}-{hi:.0f}"
-    print(f"{label:<20}{n_var:>12}{n_sing:>13}{n_sing/n_var:>11.3f}")
-
-print(f"\nTotal: {keep.sum()} variants, {sing.sum()} singletons "
-      f"({sing.sum()/keep.sum():.3f})")
-
-# =================================================================
-# 7. True per-bin genetic variance
-# =================================================================
-rows = []
-print(f"\n{'Bin (gens)':<20}{'n':>9}{'n_eff':>10}{'V_observed':>13}{'share':>9}")
-for lo, hi in zip(BINS[:-1], BINS[1:]):
-    m = (ages >= lo) & (ages < hi)
-    if not m.any():
-        continue
-    contribs = 2 * freqs[m] * (1 - freqs[m]) * beta[m]**2
-    V_bin = contribs.sum()
-    ss = (contribs**2).sum()
-    n_eff = V_bin**2 / ss if ss > 0 else 0.0   # Kish effective n
-
-    label = f"{lo:.0f}+" if np.isinf(hi) else f"{lo:.0f}-{hi:.0f}"
-    print(f"{label:<20}{m.sum():>9}{n_eff:>10.1f}{V_bin:>13.4g}"
-          f"{V_bin / V_A_empirical:>9.3f}")
-
-    rows.append({
-        "bin_lo": lo, "bin_hi": hi, "n_variants": int(m.sum()),
-        "n_eff": n_eff, "V_observed": V_bin,
-        "true_share": V_bin / V_A_empirical,
+    summary.append({
+        "rep": args.rep, "S": S, "n_ind": N_IND, "L": ts.sequence_length,
+        "M_sing": M_SING, "mean_c": M_SING / N_IND,
+        "var_g": var_g, "V_E": SIGMA2_E, "h2_realised": h2,
+        "V_A_empirical": V_A_emp, "V_M_true": V_M_TRUE,
+        "T_implied": V_A_emp / V_M_TRUE,
     })
 
-pd.DataFrame(rows).to_csv(
-    SIM_PATH_REP / f"{SIM_VERSION}_bin_truth.csv", index=False)
-
-
-# =================================================================
-# 8. GENIE annotation matrix (row i aligns with row i of the .bim)
-# =================================================================
-bin_labels = [
-    f"{lo:.0f}+" if np.isinf(hi) else f"{lo:.0f}-{hi:.0f}"
-    for lo, hi in zip(BINS[:-1], BINS[1:])
-]
-bins_all = pd.cut(ages, bins=BINS, labels=bin_labels, right=False)
-
-annotations = pd.get_dummies(
-    bins_all[keep], prefix="bin", prefix_sep="_"
-).reindex(columns=[f"bin_{b}" for b in bin_labels], fill_value=0).astype(int)
-
-assert len(annotations) == keep.sum(), "annotation rows != retained variants"
-assert (annotations.sum(axis=1) == 1).all(), "each variant must fall in exactly one bin"
-
-annotations.to_csv(
-    SIM_PATH_REP / f"{SIM_VERSION}_annotations_age_bins.txt",
-    sep=" ", index=False, header=False,
-)
-pd.DataFrame({"column_name": annotations.columns, "age_bin": bin_labels}).to_csv(
-    SIM_PATH_REP / f"{SIM_VERSION}_annotations_legend.txt", sep=" ", index=False,
-)
-
-# =================================================================
-# 9. Variant info and phenotypes
-# =================================================================
-pd.DataFrame({
-    "site_id": np.arange(M_RAW),
-    "position": positions,
-    "age": ages,
-    "bin": bins_all,
-    "freq": freqs,
-    "beta": beta,
-    "causal": causal,
-    "kept": keep,
-}).to_csv(SIM_PATH_REP / f"{SIM_VERSION}_variant_info.csv", index=False)
-
-pd.DataFrame({"FID": 0, "IID": iids, "PHENO": y}).to_csv(
-    SIM_PATH_REP / f"{SIM_VERSION}_phenotypes.GENIE.txt",
-    sep="\t", index=False,
-)
-pd.DataFrame({"iid": iids, "y": y, "g": g}).to_csv(
-    SIM_PATH_REP / f"{SIM_VERSION}_phenotypes.csv", index=False)
-
-print(f"\nWrote outputs to {SIM_PATH_REP}", flush=True)
+pd.DataFrame(summary).to_csv(OUT / "sweep_summary.csv", index=False)
+print(f"\nWrote outputs to {OUT}", flush=True)
