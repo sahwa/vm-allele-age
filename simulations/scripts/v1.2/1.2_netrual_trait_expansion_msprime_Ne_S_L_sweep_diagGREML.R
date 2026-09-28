@@ -1,247 +1,189 @@
-f = glue::glue
+library(data.table)
+library(stringr)
 library(purrr)
-BASE_DATA="/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v1.2"
+library(scales)
+library(future)
+library(furrr)
 
-params = fread("1.2_neutral_trait_expansion_msprime_n_sweep.params", col.names = c("Ne", "L"))
+f <- glue::glue
 
-nb = 6
-
-map(params, function() {
-    Ne = str_remove_all(Ne, "_")
-    L = scientific(as.numeric(L))
-    C <- fread(file.path(BASE_DATA, f("n{Ne}_L{L}"), f("singleton_counts_nb{nb}.csv")), header = TRUE)
-    Y = fread(file.path(BASE_DATA, f("n{Ne}_L{L}"), f("phenotypes.csv")), header = TRUE)
-    mean_counts <- sapply(C, mean)
-    M_t <- sapply(C, sum)
-
-    A <- Map(function(x, m) x / m, as.list(C), mean_counts)
-    X <- matrix(1, nrow = nrow(C), ncol = 1)
-
-    fit <- fit_diagGREML(y = pheno$y, A = A, X = X,
-                         constraint = FALSE, magic0316 = TRUE)
-
-    d <- data.table(
-        comp = fit$Vlistnames,
-        est  = as.numeric(fit$varcmp),
-        se   = sqrt(diag(fit$Hi)),
-        n_comp = nb
-    )
-    d <- merge(d, data.table(comp = names(C), M_t = M_t, mean_c = mean_counts),
-               by = "comp", all.x = TRUE, sort = FALSE)
-    d[, T := bin_midpoint(comp)]
-    d[, sigma2_b := est / mean_c]        # == est * N / M_t
-
-    reg <- d[comp != "error" & !is.na(T) & sigma2_b > 0]
-    if (nrow(reg) < 3) {
-        return(list(fit = d, lm = NULL, Hi = fit$Hi,
-                    comps = fit$Vlistnames, n_used = nrow(reg)))
-    }
-
-    m <- lm(log(sigma2_b) ~ T, data = reg)
-    list(fit = d, lm = m, Hi = fit$Hi, comps = fit$Vlistnames,
-         sigma2_m = exp(coef(m)[1]), s_hat = -coef(m)[2], n_used = nrow(reg))
-})
-
-
-
-
-VERSION = "1.2.1"
-REP = 0
-
+BASE_DATA <- "/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v1.2"
 source("/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/programs/diagGREML.R")
-DATA=f("/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v{VERSION}/replicates/rep{REP}")
-FIGS = f("/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/figs/v{VERSION}")
-pheno = fread(file.path(DATA, f("{VERSION}_phenotypes.csv")), header=T)
-
-sets = setdiff(1:6, 5)
-
-N = 2e4
 
 bin_midpoint <- function(x) {
-  ifelse(x == "error" | str_detect(x, "\\+$"), NA_real_,
-         map_dbl(str_split(x, "-"), ~ mean(as.numeric(.x))))
+  out <- rep(NA_real_, length(x))
+  ok  <- str_detect(x, "^[0-9.]+-[0-9.]+$")          # "error" and "205+" stay NA
+  out[ok] <- map_dbl(str_split(x[ok], "-"), ~ mean(as.numeric(.x)))
+  out
 }
 
-res <- purrr::map(sets, function(nb) {
-    C <- fread(file.path(DATA, f("{VERSION}_singleton_counts_nb{nb}.csv")), header = TRUE)
-    p_count_ind = melt(C, measure.vars = names(C), variable.name = "bin", value.name = "count") %>%
-        ggplot(aes(count + 1)) +
-        geom_histogram(bins = 60, fill = "grey35") +
-        facet_wrap(~ bin, ncol = 4) +
-        scale_x_log10(labels = scales::comma) +
-        labs(x = "Singletons per individual (+1, log scale)", y = "Individuals")
+runs  <- fread("1.2_neutral_trait_expansion_msprime_n_sweep.params",
+               col.names = c("n_dip", "L"), colClasses = "character")
+Svals <- c(0, 1e-4, 3e-4, 1e-3, 3e-3, 1e-2)
+NBs   <- c(1, 2, 3, 4, 6)
 
-    ggsave(file.path(FIGS, sprintf("singleton_count_per_ind_nb%d.png", nb)),
-           p_count_ind,  height = 4.5, dpi = 200)
+# keep existing (n, L) pairs; cross only with S and nb
+grid <- runs[, CJ(S = Svals, nb = NBs), by = .(n_dip, L)]
 
-    mean_counts <- sapply(C, mean)
-    M_t <- sapply(C, sum)
+fit_one <- function(n_dip, L, S, nb) {
+  run_dir <- file.path(BASE_DATA,
+                       f("n{str_remove_all(n_dip, '_')}_L{scientific(as.numeric(L))}"))
+  c_file  <- file.path(run_dir, f("singleton_counts_nb{nb}.csv"))
+  y_file  <- file.path(run_dir, f("phenotypes_S{scientific(S)}.csv"))
+  stopifnot(file.exists(c_file), file.exists(y_file))
 
-    A <- Map(function(x, m) x / m, as.list(C), mean_counts)
-    X <- matrix(1, nrow = nrow(C), ncol = 1)
+  C     <- fread(c_file, header = TRUE)
+  pheno <- fread(y_file, header = TRUE)
+  stopifnot(nrow(C) == nrow(pheno))
 
-    fit <- fit_diagGREML(y = pheno$y, A = A, X = X,
-                         constraint = FALSE, magic0316 = TRUE)
+  keep <- names(C)[colSums(C) > 0]                    # drop empty bins
+  C    <- C[, ..keep]
 
-    d <- data.table(
-        comp = fit$Vlistnames,
-        est  = as.numeric(fit$varcmp),
-        se   = sqrt(diag(fit$Hi)),
-        n_comp = nb
-    )
-    d <- merge(d, data.table(comp = names(C), M_t = M_t, mean_c = mean_counts),
-               by = "comp", all.x = TRUE, sort = FALSE)
-    d[, T := bin_midpoint(comp)]
-    d[, sigma2_b := est / mean_c]        # == est * N / M_t
+  mean_c <- sapply(C, mean)
+  M_t    <- sapply(C, sum)
+  A      <- Map(`/`, as.list(C), mean_c)
+  X      <- matrix(1, nrow = nrow(C), ncol = 1)
 
-    reg <- d[comp != "error" & !is.na(T) & sigma2_b > 0]
-    if (nrow(reg) < 3) {
-        return(list(fit = d, lm = NULL, Hi = fit$Hi,
-                    comps = fit$Vlistnames, n_used = nrow(reg)))
-    }
+  fit <- fit_diagGREML(y = pheno$y, A = A, X = X,
+                       constraint = FALSE, magic0316 = TRUE)
 
-    m <- lm(log(sigma2_b) ~ T, data = reg)
-    list(fit = d, lm = m, Hi = fit$Hi, comps = fit$Vlistnames,
-         sigma2_m = exp(coef(m)[1]), s_hat = -coef(m)[2], n_used = nrow(reg))
-})
+  d <- data.table(comp = fit$Vlistnames,
+                  est  = as.numeric(fit$varcmp),
+                  se   = sqrt(diag(fit$Hi)))
+  stopifnot(all(setdiff(d$comp, "error") %in% names(C)))
 
-summary_dt <- rbindlist(lapply(res, function(r) {
-    data.table(
-        n_comp   = r$fit$n_comp[1],
-        n_used   = if (is.null(r$lm)) 0L else r$n_used,
-        sigma2_m = if (is.null(r$lm)) NA_real_ else r$sigma2_m,
-        s_hat    = if (is.null(r$lm)) NA_real_ else r$s_hat,
-        s_se     = if (is.null(r$lm)) NA_real_ else summary(r$lm)$coef[2, 2],
-        s_p      = if (is.null(r$lm)) NA_real_ else summary(r$lm)$coef[2, 4],
-        r2       = if (is.null(r$lm)) NA_real_ else summary(r$lm)$r.squared
-    )
-}))
+  d <- merge(d, data.table(comp = names(C), M_t = M_t, mean_c = mean_c),
+             by = "comp", all.x = TRUE, sort = FALSE)
+  d[, `:=`(t_mid    = bin_midpoint(comp),
+           sigma2_b = est / mean_c,                    # == est * N / M_t
+           n_dip = n_dip, L = L, S = S, nb = nb)]
 
-fits_dt <- rbindlist(lapply(res, `[[`, "fit"))
+  reg <- d[!is.na(t_mid) & est > 0]
+  out <- list(fit = d, Hi = fit$Hi, n_used = nrow(reg),
+              lm = NULL, sigma2_m = NA_real_, s_hat = NA_real_)
+  if (nrow(reg) < 3) return(out)
+
+  m <- lm(log(sigma2_b) ~ t_mid, data = reg, weights = (est / se)^2)
+  modifyList(out, list(lm = m,
+                       sigma2_m = unname(exp(coef(m)[1])),
+                       s_hat    = unname(-coef(m)[2])))
+}
+
+n_workers <- as.integer(Sys.getenv("SLURM_CPUS_PER_TASK", "4"))
+plan(multicore, workers = n_workers)   # forks; Linux only, not inside RStudio
+
+res <- future_pmap(
+  grid,
+  safely(fit_one),
+  .options = furrr_options(
+    seed       = TRUE,
+    scheduling = Inf,                  # one task per row = dynamic load balancing
+    packages   = c("data.table", "stringr", "purrr", "scales", "glue")
+  )
+)
 
 
-library(ggplot2)
 library(data.table)
-library(patchwork)
+library(ggplot2)
+library(stringr)
+library(purrr)
 
-# ---- panel A: variance components with 95% CIs ----
+# ---- inputs ---------------------------------------------------------------
+# True per-mutation effect variance, matching what goes into D:
+#   causal singletons only  -> SIGMA_BETA^2
+#   all singletons          -> PI_CAUSAL * SIGMA_BETA^2
+TRUE_SIGMA2_M <- 1e-4          # <-- set from your simulation parameters
+OUT_DIR <- "figures"
+dir.create(OUT_DIR, showWarnings = FALSE)
 
-res <- data.table(
-    comp = factor(fit$Vlistnames[1:4], levels = fit$Vlistnames[1:4]),
-    h2   = fit$h2,
-    se   = fit$se_h2
-)[, `:=`(lo = h2 - 1.96 * se, hi = h2 + 1.96 * se)]
+# ---- tidy ------------------------------------------------------------------
+comp_dt <- copy(summary_dt)
+comp_dt[, n := as.numeric(str_remove_all(n_dip, "_"))]
+comp_dt[, L := as.numeric(L)]
+comp_dt[, n_lab := factor(format(n, big.mark = ",", scientific = FALSE),
+                          levels = format(sort(unique(n)), big.mark = ",", scientific = FALSE))]
+comp_dt[, S_lab := factor(paste0("s = ", S), levels = paste0("s = ", sort(unique(S))))]
+comp_dt[, is_old := str_detect(comp, "\\+$")]
+comp_dt[is_old == TRUE, t_mid := 250]                  # plotting position only
 
-pA <- ggplot(res, aes(x = comp, y = h2)) +
-    geom_hline(yintercept = 0, colour = "grey40", linewidth = 0.4) +
-    geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.12, linewidth = 0.5) +
-    geom_point(size = 2.6, colour = "#B2182B") +
-    scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
-    labs(
-        x = "Allele age bin (generations)",
-        y = expression("Proportion of"~italic(V[P])),
-        title = "A. Singleton variance components",
-        subtitle = sprintf("LRT = %.2f on %d df, p = %.2f (n = %s)",
-                           fit$LRT, fit$df, fit$p_LRT,
-                           format(fit$n, big.mark = ","))
-    ) +
-    theme_classic(base_size = 11) +
-    theme(
-        panel.border = element_rect(colour = "grey75", fill = NA, linewidth = 0.5),
-        plot.title = element_text(face = "bold", size = 11),
-        plot.subtitle = element_text(size = 9, colour = "grey30")
-    )
+slopes <- rbindlist(imap(compact(res), function(r, id) {
+  if (is.null(r$lm)) return(NULL)
+  cf <- summary(r$lm)$coefficients
+  r$fit[1, .(n_dip, L, S, nb)][, `:=`(
+    s_hat     = r$s_hat,
+    s_se      = cf["t_mid", "Std. Error"],
+    sigma2_m  = r$sigma2_m,
+    int_se    = cf["(Intercept)", "Std. Error"],
+    n_used    = r$n_used
+  )]
+}))
+slopes[, n := as.numeric(str_remove_all(n_dip, "_"))]
+slopes[, L := as.numeric(L)]
+slopes[, n_lab := factor(format(n, big.mark = ",", scientific = FALSE),
+                         levels = format(sort(unique(n)), big.mark = ",", scientific = FALSE))]
 
-# ---- panel B: sampling correlation between components ----
-sd_v <- sqrt(diag(fit$Hi))
-Cor  <- fit$Hi / outer(sd_v, sd_v)
-dimnames(Cor) <- list(fit$Vlistnames, fit$Vlistnames)
+L_PLOT  <- 1e8   # the complete series
+NB_PLOT <- 4
 
-cor_dt <- as.data.table(as.table(Cor))
-setnames(cor_dt, c("row", "col", "r"))
-cor_dt[, `:=`(row = factor(row, levels = fit$Vlistnames),
-              col = factor(col, levels = rev(fit$Vlistnames)))]
+# ---- 1. raw variance components per bin -----------------------------------
+p1 <- ggplot(comp_dt[comp != "error" & L == L_PLOT & nb == NB_PLOT],
+             aes(t_mid, est, shape = is_old)) +
+  geom_hline(yintercept = 0, colour = "grey60") +
+  geom_pointrange(aes(ymin = est - 1.96 * se, ymax = est + 1.96 * se), size = 0.3) +
+  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 1),
+                     labels = c("dated bin", "205+ catch-all"), name = NULL) +
+  facet_grid(n_lab ~ S_lab, scales = "free_y") +
+  labs(x = "Bin midpoint (generations)",
+       y = expression("REML component " * sigma[b(t)]^2),
+       title = sprintf("Variance components by age bin (nb = %d, L = %g)", NB_PLOT, L_PLOT)) +
+  theme_bw() + theme(legend.position = "bottom")
 
-pB <- ggplot(cor_dt, aes(row, col, fill = r)) +
-    geom_tile(colour = "white", linewidth = 0.5) +
-    geom_text(aes(label = sprintf("%.2f", r)), size = 2.9) +
-    scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B",
-                         midpoint = 0, limits = c(-1, 1), name = "r") +
-    labs(x = NULL, y = NULL, title = "B. Sampling correlation of estimates") +
-    theme_classic(base_size = 11) +
-    theme(
-        axis.line = element_blank(),
-        axis.ticks = element_blank(),
-        axis.text.x = element_text(angle = 45, hjust = 1),
-        plot.title = element_text(face = "bold", size = 11)
-    )
+# ---- 2. the grant regression: log per-mutation variance vs t --------------
+reg_dt <- comp_dt[comp != "error" & is_old == FALSE & L == L_PLOT & nb == NB_PLOT]
+reg_dt[, log_s2 := ifelse(est > 0, log(sigma2_b), NA_real_)]
+reg_dt[, log_se := se / est]                            # delta method
 
-p <- pA + pB + plot_layout(widths = c(1, 1.15))
+truth <- unique(reg_dt[, .(S, S_lab)])[, `:=`(a = log(TRUE_SIGMA2_M), b = -S)]
+fits  <- merge(slopes[L == L_PLOT & nb == NB_PLOT],
+               unique(comp_dt[, .(S, S_lab)]), by = "S")
+fits[, `:=`(a = log(sigma2_m), b = -s_hat)]
 
-ggsave(file.path(FIGS, "diagGREML_singleton_components.png"),
-       p, width = 10, height = 4.2, dpi = 200)
+p2 <- ggplot(reg_dt[!is.na(log_s2)], aes(t_mid, log_s2)) +
+  geom_pointrange(aes(ymin = log_s2 - 1.96 * log_se, ymax = log_s2 + 1.96 * log_se),
+                  size = 0.3) +
+  geom_abline(data = truth, aes(intercept = a, slope = b),
+              colour = "firebrick", linetype = "dashed") +
+  geom_abline(data = fits, aes(intercept = a, slope = b), colour = "steelblue") +
+  facet_grid(n_lab ~ S_lab) +
+  labs(x = "Bin midpoint (generations)",
+       y = expression(log(sigma[b(t)]^2 / bar(x)[t])),
+       title = "Per-mutation variance by age: fit (blue) vs truth (red dashed)",
+       caption = "Bins with negative estimates are omitted from the plot and the fit") +
+  theme_bw()
 
+# ---- 3. recovery of s ------------------------------------------------------
+p3 <- ggplot(slopes[L == L_PLOT], aes(S, s_hat, colour = n_lab)) +
+  geom_abline(slope = 1, intercept = 0, colour = "grey50", linetype = "dashed") +
+  geom_pointrange(aes(ymin = s_hat - 1.96 * s_se, ymax = s_hat + 1.96 * s_se),
+                  position = position_dodge(width = 5e-4), size = 0.3) +
+  facet_wrap(~ paste0("nb = ", nb)) +
+  labs(x = "True s", y = expression(hat(s)), colour = "n",
+       title = "Recovery of the selection parameter") +
+  theme_bw()
 
-########
+# ---- 4. recovery of sigma2_m ----------------------------------------------
+p4 <- ggplot(slopes[L == L_PLOT], aes(S, sigma2_m / TRUE_SIGMA2_M, colour = n_lab)) +
+  geom_hline(yintercept = 1, colour = "grey50", linetype = "dashed") +
+  geom_pointrange(aes(ymin = exp(log(sigma2_m) - 1.96 * int_se) / TRUE_SIGMA2_M,
+                      ymax = exp(log(sigma2_m) + 1.96 * int_se) / TRUE_SIGMA2_M),
+                  position = position_dodge(width = 5e-4), size = 0.3) +
+  scale_y_log10() +
+  facet_wrap(~ paste0("nb = ", nb)) +
+  labs(x = "True s", y = expression(hat(sigma)[m]^2 / sigma[m]^2), colour = "n",
+       title = "Recovery of per-mutation effect variance (1 = unbiased)") +
+  theme_bw()
 
-library(patchwork)
-H2_SING <- 0.10
-
-purrr::iwalk(res, function(r, i) {
-    nb <- r$fit$n_comp[1]
-    vy <- var(pheno$y)
-
-    d <- as.data.table(r$fit)[comp != "error"]
-    d[, comp := factor(comp, levels = gtools::mixedsort(unique(comp)))]
-    d[, `:=`(h2 = est / vy, se_h2 = se / vy)]
-    d[, `:=`(lo = h2 - 1.96 * se_h2, hi = h2 + 1.96 * se_h2)]
-
-    n_young <- d[comp != "205+", .N]
-    d[, truth := fifelse(comp == "205+", NA_real_, H2_SING / n_young)]
-
-    pA <- ggplot(d, aes(comp, h2)) +
-        geom_hline(yintercept = 0, colour = "grey40", linewidth = 0.4) +
-        geom_point(aes(y = truth), shape = 95, size = 8, colour = "#2166AC") +
-        geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.12, linewidth = 0.5) +
-        geom_point(size = 2.6, colour = "#B2182B") +
-        scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
-        labs(x = "Allele age bin (generations)",
-             y = expression("Proportion of"~italic(V[P])),
-             title = sprintf("A. Variance components (%d bins)", nb),
-             subtitle = sprintf("blue = truth; sum = %.3f vs %.3f",
-                                d[comp != "205+", sum(est)], H2_SING)) +
-        theme_classic(base_size = 11) +
-        theme(panel.border = element_rect(colour = "grey75", fill = NA, linewidth = 0.5),
-              axis.text.x = element_text(angle = 45, hjust = 1),
-              plot.title = element_text(face = "bold", size = 11),
-              plot.subtitle = element_text(size = 9, colour = "grey30"))
-
-    p <- pA
-    w <- 7
-
-    if (!is.null(r$Hi)) {
-        comps <- r$comps
-        Cor <- cov2cor(r$Hi)
-        dimnames(Cor) <- list(comps, comps)
-        cd <- as.data.table(as.table(Cor))
-        setnames(cd, c("row", "col", "corr"))
-        cd[, `:=`(row = factor(row, levels = comps),
-                  col = factor(col, levels = rev(comps)))]
-
-        pB <- ggplot(cd, aes(row, col, fill = corr)) +
-            geom_tile(colour = "white", linewidth = 0.5) +
-            geom_text(aes(label = sprintf("%.2f", corr)), size = 2.7) +
-            scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B",
-                                 midpoint = 0, limits = c(-1, 1), name = "r") +
-            labs(x = NULL, y = NULL, title = "B. Sampling correlation") +
-            theme_classic(base_size = 11) +
-            theme(axis.line = element_blank(), axis.ticks = element_blank(),
-                  axis.text.x = element_text(angle = 45, hjust = 1),
-                  plot.title = element_text(face = "bold", size = 11))
-
-        p <- pA + pB + plot_layout(widths = c(1, 1.1))
-        w <- 12
-    }
-    ggsave(file.path(FIGS, sprintf("diagGREML_components_nb%d.png", nb)),
-           p, width = w, height = 4.5, dpi = 200)
-})
+ggsave(file.path(OUT_DIR, "components_by_bin.pdf"),  p1, width = 11, height = 9)
+ggsave(file.path(OUT_DIR, "log_regression.pdf"),     p2, width = 11, height = 9)
+ggsave(file.path(OUT_DIR, "s_recovery.pdf"),         p3, width = 9,  height = 5)
+ggsave(file.path(OUT_DIR, "sigma2m_recovery.pdf"),   p4, width = 9,  height = 5)

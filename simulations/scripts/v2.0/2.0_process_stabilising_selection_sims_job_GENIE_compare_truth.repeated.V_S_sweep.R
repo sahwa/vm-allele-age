@@ -149,28 +149,28 @@ bin_summary = all_sim_bin_h2[, .(
 
 bin_summary[, z := mean_bias / se_bias]
 
-p1 = all_sim_bin_h2 %>%  
-    ggplot(aes(x=true_share, y=est_share, colour=bin_label, shape=as.factor(V_S))) + 
+p1 = all_sim_bin_h2 %>%
+    ggplot(aes(x=true_share, y=est_share, colour=bin_label, shape=as.factor(V_S))) +
     geom_point() +
     geom_abline(colour = 'red', linetype = 'dashed') +
     viridis::scale_colour_viridis(discrete=T)
 p1_out = file.path(FIGS, f("{VERSION}_{SELECTION_TYPE}_true_v_est_VA_V_S_vary.png"))
 ggsave(p1_out, p1)
 
-p2 = all_sim_bin_h2 %>% 
-    mutate(midpoint_bin = (bin_hi - bin_lo) / 2) %>% 
-    group_by(bin_lo, V_S) %>% summarise(mean_true = mean(true_share)) %>% 
-    ggplot(aes(x=bin_lo, y=mean_true, group =  V_S, colour = as.factor(V_S))) + 
+p2 = all_sim_bin_h2 %>%
+    mutate(midpoint_bin = (bin_hi - bin_lo) / 2) %>%
+    group_by(bin_lo, V_S) %>% summarise(mean_true = mean(true_share)) %>%
+    ggplot(aes(x=bin_lo, y=mean_true, group =  V_S, colour = as.factor(V_S))) +
     geom_line() +
     geom_point()
 p2_out = file.path(FIGS, f("{VERSION}_{SELECTION_TYPE}_true_share_lines_V_S_vary.png"))
 ggsave(p2_out, p2)
 
-p3 = bin_summary %>% 
+p3 = bin_summary %>%
     mutate(V_S = factor(V_S, levels = c(5, 20, 100))) %>%
-    ggplot(aes(x=V_S, y=mean_bias, colour=V_S)) + 
-    geom_hline(yintercept = 0, colour = 'red', linetype = 'dashed') + 
-    geom_jitter() + 
+    ggplot(aes(x=V_S, y=mean_bias, colour=V_S)) +
+    geom_hline(yintercept = 0, colour = 'red', linetype = 'dashed') +
+    geom_jitter() +
     facet_wrap(~bin_label, nrow=1)
 p3_out = file.path(FIGS, f("{VERSION}_{SELECTION_TYPE}_bias_V_S_vary.png"))
 ggsave(p3_out, p3)

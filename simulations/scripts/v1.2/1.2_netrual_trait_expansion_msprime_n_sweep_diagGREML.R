@@ -14,8 +14,10 @@ sets = setdiff(1:6, 5)
 N = 2e4
 
 bin_midpoint <- function(x) {
-  ifelse(x == "error" | str_detect(x, "\\+$"), NA_real_,
-         map_dbl(str_split(x, "-"), ~ mean(as.numeric(.x))))
+  ifelse(
+    x == "error" | str_detect(x, "\\+$"), NA_real_,
+    map_dbl(str_split(x, "-"),
+    ~ mean(as.numeric(.x))))
 }
 
 res <- purrr::map(sets, function(nb) {
@@ -45,7 +47,7 @@ res <- purrr::map(sets, function(nb) {
         se   = sqrt(diag(fit$Hi)),
         n_comp = nb
     )
-    d <- merge(d, data.table(comp = names(C), M_t = M_t, mean_c = mean_counts),
+    d <- merge(d, data.table(comp = names(C), M_t = M_t, mean_c = mean_c),
                by = "comp", all.x = TRUE, sort = FALSE)
     d[, T := bin_midpoint(comp)]
     d[, sigma2_b := est / mean_c]        # == est * N / M_t
@@ -58,7 +60,7 @@ res <- purrr::map(sets, function(nb) {
 
     m <- lm(log(sigma2_b) ~ T, data = reg)
     list(fit = d, lm = m, Hi = fit$Hi, comps = fit$Vlistnames,
-         sigma2_m = exp(coef(m)[1]), s_hat = -coef(m)[2], n_used = nrow(reg))
+         sigma2_m = exp(coef(m)[1]), s_hat = -coef(m)[2], n_used = nrow(reg), y_var = var(pheno$y))
 })
 
 summary_dt <- rbindlist(lapply(res, function(r) {
@@ -69,7 +71,8 @@ summary_dt <- rbindlist(lapply(res, function(r) {
         s_hat    = if (is.null(r$lm)) NA_real_ else r$s_hat,
         s_se     = if (is.null(r$lm)) NA_real_ else summary(r$lm)$coef[2, 2],
         s_p      = if (is.null(r$lm)) NA_real_ else summary(r$lm)$coef[2, 4],
-        r2       = if (is.null(r$lm)) NA_real_ else summary(r$lm)$r.squared
+        r2       = if (is.null(r$lm)) NA_real_ else summary(r$lm)$r.squared,
+        y_var = y_var
     )
 }))
 
