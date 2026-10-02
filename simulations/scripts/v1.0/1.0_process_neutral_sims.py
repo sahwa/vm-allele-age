@@ -18,7 +18,7 @@ SIM_MU = 1e-8
 RNG_SEED = 42
 RECOMBINATION_RATE = 1e-8
 
-MU = 1.44e-8 # per base mutation rate 
+MU = 1.44e-8 # per base mutation rate
 PI_TARGET = 0.01 # fraction of the genome that's a mutational target
 
 SIM_PATH="/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data"
@@ -33,9 +33,9 @@ PHENOTYPE_OUT = Path(SIM_PATH) / f"{SIM_VERSION}_neutral_out.phenotypes"
 # ---------------------------------------------------------------
 # Load in the SLiM treee
 # We are doing this because it's easier to plop mutations onto the tree after we have simulated it forward
-# rather than simulating it as you go along. 
+# rather than simulating it as you go along.
 TREE_FILE = Path(SIM_PATH) / f"{SIM_VERSION}_neutral_out.trees"
-ts = tskit.load(TREE_FILE) 
+ts = tskit.load(TREE_FILE)
 
 # Because we simulated forward in time, some of the trees don't coalesce
 # First check for multi-root trees
@@ -70,10 +70,10 @@ assert n_multiroot_after == 0, "Recapitation incomplete - check ancestral_Ne"
 # ---------------------------------------------------------------
 
 ## then simulate mutations over the top of the tree
-## the rate, i.e. the number per generation is 
+## the rate, i.e. the number per generation is
 mts = msprime.sim_mutations(
     rts,
-    rate=MU * PI_TARGET, # because we only want to simulate them at a rate of mutational target 
+    rate=MU * PI_TARGET, # because we only want to simulate them at a rate of mutational target
     random_seed=RNG_SEED,
     model=msprime.JC69(),  # keeps SLiM-style metadata
     keep=True,   # keep any mutations already present (none, here)
@@ -114,20 +114,20 @@ print(f"Freq range: {freqs.min():.5f} - {freqs.max():.5f}")
 # 5. Assign effect sizes (neutral trait: independent of age/freq)
 # ---------------------------------------------------------------
 sigma_beta = 1.0
-beta = rng.normal(0, sigma_beta, size=M) # draw betas from gaussian distribution  
+beta = rng.normal(0, sigma_beta, size=M) # draw betas from gaussian distribution
 
 # ---------------------------------------------------------------
 # 6. Ground-truth V_M and V_A checks
 # ---------------------------------------------------------------
 u_target = MU * PI_TARGET * (mts.sequence_length)   # per-gamete target rate: this is the number of mutations in the target area we expect to see per gamete
 V_M_true = 2 * u_target * sigma_beta**2 # This is the total amount of additive variance put into the population from new mutations. 2 * u_target is the total number of new mutations
-                                        # and then we multiple that by the expected effect size 
+                                        # and then we multiple that by the expected effect size
                                         # This is basically what we expect to see, not actually looking at any simulated sequence at all
 V_A_analytic = 2 * SIM_NE * V_M_true # under mutation drift balance, with no selection on the trait - then standing additive variance is the input rate, V
                                      # multiplied by the persistance rate (think of it like a tape - the input rate is the rate of the tap and the persistence is the drain)
                                      # under pure drift, the persistence time is 2*Ne generations (small populations mean persistence time is lower and they get lost to drift faster)
                                      # So this value is what we expecte V_A to take before we do any simulations
-V_A_empirical = np.sum(2 * freqs * (1 - freqs) * beta**2) # This is  the additive variation based on the sum(f * (1-f) * B) calculation. So using the data. 
+V_A_empirical = np.sum(2 * freqs * (1 - freqs) * beta**2) # This is  the additive variation based on the sum(f * (1-f) * B) calculation. So using the data.
 
 print(f"\nV_M (true, analytic):   {V_M_true:.4g}")
 print(f"V_A (analytic 2*Ne*V_M): {V_A_analytic:.4g}")
@@ -168,11 +168,11 @@ for lo, hi in zip(bins[:-1], bins[1:]):
     if m.sum() == 0:
         continue
     V_bin = np.sum(2 * freqs[m] * (1 - freqs[m]) * beta[m]**2) ## additive genetic variance from the bin (simply the effect size * f * (1-f))
-    width = min(hi, 1e5) - lo # 
-    K_bar = V_bin / (V_M_true * width) # K_bar is the proportion of the original V_M that exist per generation 
-                                       # but we observe the values aggregated across the bin, so we have to divide 
+    width = min(hi, 1e5) - lo #
+    K_bar = V_bin / (V_M_true * width) # K_bar is the proportion of the original V_M that exist per generation
+                                       # but we observe the values aggregated across the bin, so we have to divide
                                        # by the width of the bin to get an approximate value
-    K_integral_expected = 2*SIM_NE * (np.exp(-lo/(2*SIM_NE)) - np.exp(-hi/(2*SIM_NE))) 
+    K_integral_expected = 2*SIM_NE * (np.exp(-lo/(2*SIM_NE)) - np.exp(-hi/(2*SIM_NE)))
     K_bar_expected = K_integral_expected / width   # mean of K over the bin
     K_expected = np.exp(-lo / (2 * SIM_NE))
     n_bin = m.sum()

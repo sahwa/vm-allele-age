@@ -1,0 +1,97 @@
+// ============================================================================
+// Forward simulation of causal mutations under direct (pleiotropic) selection.
+// Each new mutation gets an effect size beta ~ N(0, SIGMA_BETA^2) and a
+// selection coefficient s = -K_SEL * beta^2, so bigger effects are purged faster.
+// At the end, a small sample is taken and every singleton in it is written out
+// with its carrier, age and beta.
+// ============================================================================
+
+initialize() {
+    // --- Parameters. Each has a default, but any can be overridden from the
+    // --- command line with -d NAME=value, so a SLURM array can sweep them.
+    if (!exists("N"))          defineConstant("N", 50000);       // population size (diploids)
+    if (!exists("N_SAMPLE"))   defineConstant("N_SAMPLE", 2000); // sampled individuals; keep to a few % of N (see note)
+    if (!exists("L"))          defineConstant("L", 1e8);         // length of the simulated region (bp)
+    if (!exists("MU"))         defineConstant("MU", 1.28e-8);    // per-base mutation rate per generation
+    if (!exists("PI_TARGET"))  defineConstant("PI_TARGET", 0.1); // fraction of sites that are causal
+    if (!exists("RECO_RATE"))  defineConstant("RECO_RATE", 1e-8);// per-base recombination rate (1e-8, not 1e8)
+    if (!exists("SIGMA_BETA")) defineConstant("SIGMA_BETA", 1.0);// SD of effect sizes of new mutations
+    if (!exists("K_SEL"))      defineConstant("K_SEL", 0.02);    // strength of selection: s = -K_SEL * beta^2
+    if (!exists("END_TICK"))   defineConstant("END_TICK", 2000); // generations to run; only needs to exceed the oldest bin you care about
+    if (!exists("OUTFILE"))    defineConstant("OUTFILE", "singletons.tsv"); // where the singleton table is written
+
+    defineConstant("START_TIME", clock());   // CPU time at start, used for progress reporting
+
+    // Only causal mutations are simulated (neutral ones don't affect the phenotype),
+    // so the rate is the per-base rate times the causal fraction.
+    initializeMutationRate(MU * PI_TARGET);
+
+    initializeRecombinationRate(RECO_RATE);  // keeps causal variants roughly independent
+
+    // Dominance 0.5 (additive). The fixed effect 0.0 is a placeholder: the real
+    // selection coefficient is set per mutation in the mutation() callback below.
+    initializeMutationType("m1", 0.5, "f", 0.0);
+
+    m1.convertToSubstitution = T;            // drop fixed mutations from memory; they're no longer singletons
+
+    initializeGenomicElementType("g1", m1, 1.0);           // one element type, made only of m1 mutations
+    initializeGenomicElement(g1, 0, asInteger(L) - 1);     // spanning the whole region (end must be an integer)
+}
+
+// Runs once for every new mutation, before it enters the population.
+mutation(m1) {
+    b = rnorm(1, 0.0, SIGMA_BETA);                  // draw this mutation's effect on the trait
+    mut.setValue("beta", b);                        // store beta on the mutation so it can be written out later
+    mut.setSelectionCoeff(max(-1.0, -K_SEL * b^2)); // fitness cost grows with beta^2; capped at -1 (lethal)
+    return T;                                       // accept the mutation (with its new selection coefficient)
+}
+
+// Tick 1: create the population and move the output event to END_TICK.
+1 early() {
+    sim.addSubpop("p1", N);                                   // one population of N diploids, no mutations yet
+    community.rescheduleScriptBlock(s1, ticks = END_TICK);    // run the output block at END_TICK (a constant can't be used directly as a tick)
+}
+
+// Every tick: occasional progress report.
+1: late() {
+    if (community.tick % 500 == 0) {                          // only every 500 generations, to keep the log short
+        elapsed = clock() - START_TIME;                        // CPU seconds so far
+        rate = community.tick / max(elapsed, 1e-6);            // generations per second (guard against dividing by 0)
+        remaining = (END_TICK - community.tick) / rate;        // estimated seconds left
+        cat("Tick " + community.tick + " / " + END_TICK
+            + "  segregating: " + size(sim.mutations)          // number of causal mutations currently present
+            + "  (" + format("%.0f", elapsed) + "s elapsed, "
+            + format("%.0f", remaining) + "s remaining)\n");
+    }
+}
+
+// Output block. The tick here is a placeholder; it is moved to END_TICK in tick 1.
+s1 2000 late() {
+    sample  = p1.sampleIndividuals(N_SAMPLE);        // random sample, analogous to a biobank sample
+    haplosomes = sample.haplosomes;                        // both genomes of every sampled individual
+
+    muts   = sim.mutations;                          // every segregating mutation in the population
+    counts = haplosomes.mutationCountsInHaplosomes(muts);  // copies of each mutation within the sample only
+    sing   = muts[counts == 1];                      // singletons: exactly one copy in the sample
+    sing_ids = sing.id;                              // their IDs, for matching against each individual
+
+    lines = "carrier\tage\tbeta";                    // header line of the output table
+
+    for (i in seqAlong(sample)) {                    // go through sampled individuals one at a time
+        ids = sample[i].haplosomes.mutations.id;        // IDs of all mutations this individual carries
+        m = match(ids, sing_ids);                    // position in sing_ids, or -1 if not a singleton
+        m = m[m >= 0];                               // keep only the singletons
+        if (size(m) > 0) {
+            s = sing[m];                             // the singleton mutations this individual carries
+            lines = c(lines,
+                asString(i + 1) + "\t"                               // carrier ID, 1-based to match R
+                + asString(community.tick - s.originTick) + "\t"     // age in generations
+                + asString(s.getValue("beta")));                     // true effect size
+        }
+    }
+
+    writeFile(OUTFILE, lines);                       // one row per singleton
+    cat("Wrote " + size(sing) + " singletons from " + N_SAMPLE
+        + " individuals to " + OUTFILE + "\n");
+    sim.simulationFinished();                        // stop here
+}
