@@ -1,18 +1,20 @@
 #!/usr/bin/env Rscript
-## v5.0 sweep: K, t_max, CV, H2, S at N = 500,000
+## v5.0 sweep: K, t_max, CV, H2, S at N = 500,000 -- one SLURM array task per cell
+##   Rscript v5_sweep.R grid                    write cells.txt, one line per cell
+##   Rscript v5_sweep.R cell S H2 CV K t_max    run all reps for one cell
+##   Rscript v5_sweep.R collect                 combine cells, summarise, plot
 
-library(future); library(furrr); library(purrr)
-library(ggplot2); library(data.table); library(scales)
-library(progressr)
-handlers(global = TRUE)
-handlers("txtprogressbar")        # batch-friendly; "cli" if interactive
+library(data.table)
+RNGkind("L'Ecuyer-CMRG")   # what furrr's seed = TRUE was using underneath set.seed()
 
-source("/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/programs/diagGREML.R")
+BASE <- "/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations"
+source(file.path(BASE, "programs/diagGREML.R"))
 
-OUTDIR <- "/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/figs/v5.0"
-DATDIR <- "/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v5.0"
-dir.create(OUTDIR, recursive = TRUE, showWarnings = FALSE)
-dir.create(DATDIR, recursive = TRUE, showWarnings = FALSE)
+OUTDIR   <- file.path(BASE, "figs/v5.0")
+DATDIR   <- file.path(BASE, "data/v5.0")
+CELLDIR  <- file.path(DATDIR, "cells")
+CELLFILE <- file.path(DATDIR, "cells.txt")
+for (d in c(OUTDIR, CELLDIR)) dir.create(d, recursive = TRUE, showWarnings = FALSE)
 
 ## ---- parameters ------------------------------------------------------------
 SIGMA_BETA <- 1
@@ -22,7 +24,7 @@ LAMBDA     <- 1000                 # singletons per person per bin
 H2_vals <- c(0.5, 0.1, 0.034, 0.02, 0.01)   # 0.5 = reference; 0.01-0.034 realistic (Wang et al.)
 Svals   <- c(0, 1e-4, 1e-3, 1e-2, 3e-2)
 CV_vals <- c(0.15, 0.30, 0.65)              # 0.65 ~ UKB (mean SC 17.4, SD 11.1); 0.37 if outliers removed
-N_vals  <- c(5e5)
+N_INDS  <- 5e5
 K_VALS  <- c(3, 8)
 T_VALS  <- c(200, 400)
 N_REPS  <- 100
@@ -34,6 +36,42 @@ COL_EST <- "grey25"; COL_TRUTH <- "#D7191C"; COL_SD <- "#2C7BB6"
 h2_lab <- function(x) {
   v <- as.numeric(as.character(x))
   ifelse(v %in% H2_REALISTIC, paste0("h\u00b2 = ", v), paste0("h\u00b2 = ", v, " (ref)"))
+}
+
+cell_grid <- function() CJ(S = Svals, H2 = H2_vals, CV = CV_vals, K = K_VALS, t_max = T_VALS)
+cell_tag  <- function(S, H2, CV, K, t_max) sprintf("S%g_H%g_CV%g_K%g_t%g", S, H2, CV, K, t_max)
+write_atomic <- function(x, f) { tmp <- paste0(f, ".tmp"); fwrite(x, tmp); file.rename(tmp, f) }
+
+## REML for y_i ~ N(Z_i b, v_i),  v_i = s2m * sum_k x_ik exp(-s t_k) + s2e
+## C: N x K matrix of singleton counts; t: bin ages; Z: fixed-effect design matrix
+fit_sel_reml <- function(y, C, t, Z = matrix(1, length(y), 1), reml = TRUE) {
+  ###
+
+  gls <- function(v) {                         # fixed effects given the variances
+    ZtViZ <- crossprod(Z, Z / v)
+    list(ZtViZ = ZtViZ, b = solve(ZtViZ, crossprod(Z, y / v)))
+  }
+
+  nll <- function(par) {                       # par = (log s2m, s, log s2e)
+    v <- exp(par[1]) * as.vector(C %*% exp(-par[2] * t)) + exp(par[3])
+    g <- gls(v)
+    r <- y - as.vector(Z %*% g$b)
+    out <- sum(log(v)) + sum(r^2 / v)
+    if (reml) out <- out + as.numeric(determinant(g$ZtViZ)$modulus)
+    0.5 * out
+  }
+
+  start <- c(log(0.02 * var(y) / mean(rowSums(C))), 0, log(0.98 * var(y)))
+  opt <- optim(start, nll, method = "BFGS", hessian = TRUE,
+               control = list(parscale = c(1, 1e-3, 1), maxit = 500))
+
+  se <- sqrt(diag(solve(opt$hessian)))
+  v  <- exp(opt$par[1]) * as.vector(C %*% exp(-opt$par[2] * t)) + exp(opt$par[3])
+  list(s = opt$par[2], s_se = se[2],
+       sigma2_m = exp(opt$par[1]), log_sigma2_m_se = se[1],
+       sigma2_e = exp(opt$par[3]),
+       b = as.vector(gls(v)$b),
+       logLik = -opt$value, convergence = opt$convergence)
 }
 
 ## ---- simulate one dataset --------------------------------------------------
@@ -57,6 +95,7 @@ run_one <- function(S, REP, H2, CV, N_inds, K, t_max) {
   if (any(!is.finite(m) | m <= 0)) stop("bad mean count")
 
   A   <- setNames(lapply(seq_len(K), function(k) C[, k] / m[k]), colnames(C))
+  joint_fit = fit_sel_reml(y = d$Y, C=C, t=t_mid, )
   fit <- suppressMessages(fit_diagGREML(y = d$Y, X = matrix(1, nrow(C), 1), A = A,
                                         constraint = FALSE, magic0316 = TRUE))
   idx <- match(names(A), fit$Vlistnames)
@@ -83,51 +122,78 @@ run_one <- function(S, REP, H2, CV, N_inds, K, t_max) {
                     K = K, t_max = t_max,
                     n_pos = nrow(pos), n_neg = K - nrow(pos),
                     V_P = V_P, mu_per_gen = mu_per_gen, h2m_true = h2m_true,
-                    sigma2_m = NA_real_, sigma2_m_se_log = NA_real_, h2m_hat = NA_real_,
-                    s_hat = NA_real_, s_se = NA_real_)
+                    sigma2_m_sep = NA_real_, sigma2_m_se_log_sep = NA_real_, h2m_hat_sep = NA_real_,
+                    s_hat_sep = NA_real_, s_se_sep = NA_real_, s_hat_joint = NA_real_, s_hat_se_joint = NA_real_,
+                    sigma2_m_joint = NA_real_, log_sigma2_m_se_joint = NA_real_, b_joint = NA_real_, liglik_joint = NA_real_, convergence = NA_real_)
   if (!is.null(mm)) {
     cf <- summary(mm)$coefficients
     out[, `:=`(sigma2_m        = exp(cf[1, 1]),
                sigma2_m_se_log = cf[1, 2],
                h2m_hat         = mu_per_gen * exp(cf[1, 1]) / V_P,
                s_hat           = -cf[2, 1],
-               s_se            = cf[2, 2])]
+               s_se            = cf[2, 2],
+               s_hat_joint     = joint_fit$s_hat_joint,
+               
+
+    )]
+
   }
   list(rep = out, bins = bins)
 }
 
-## ---- run the grid for one N ------------------------------------------------
-run_for_N <- function(N_inds, n_workers = NULL) {
+## ---- dispatch --------------------------------------------------------------
+args <- commandArgs(trailingOnly = TRUE)
+mode <- if (length(args)) args[1] else ""
 
-  if (is.null(n_workers))
-    n_workers <- as.integer(Sys.getenv("SLURM_CPUS_PER_TASK", unset = parallel::detectCores()))
-  if (!is.finite(n_workers) || n_workers < 1) n_workers <- 1L
+if (mode == "grid") {
 
-  params <- CJ(S = Svals, REP = seq_len(N_REPS), H2 = H2_vals, CV = CV_vals,
-               t_max = T_VALS, K = K_VALS)[, N_inds := N_inds]
-  message(sprintf("N = %s: %d fits on %d workers", format(N_inds, big.mark = ","),
-                  nrow(params), n_workers))
+  fwrite(cell_grid(), CELLFILE, sep = " ", col.names = FALSE)
+  message(nrow(cell_grid()), " cells written to ", CELLFILE)
 
-  plan(multicore, workers = as.integer(n_workers))
-  res <- with_progress({
-    p <- progressor(steps = nrow(params))
-    future_pmap(as.list(params),
-      function(S, REP, H2, CV, t_max, K, N_inds) {
-        out <- safely(run_one)(S, REP, H2, CV, N_inds, K, t_max); p(); out
-      },
-      .options = furrr_options(seed = TRUE, scheduling = Inf, packages = "data.table"))
-  })
-  plan(sequential)
+} else if (mode == "cell") {
 
-  errs <- keep(res, ~ !is.null(.x$error))
-  if (length(errs)) warning(length(errs), "/", length(res), " hard failures. First: ",
-                            conditionMessage(errs[[1]]$error))
+  a <- suppressWarnings(as.numeric(args[-1]))
+  if (length(a) != 5 || anyNA(a)) stop("usage: v5_sweep.R cell S H2 CV K t_max")
+  S <- Svals[which.min(abs(Svals - a[1]))]        # snap to grid: the seed uses which(Svals == S)
+  if (abs(S - a[1]) > 1e-12) stop("S must be one of Svals")
+  H2 <- a[2]; CV <- a[3]; K <- as.integer(a[4]); t_max <- a[5]
 
-  ok   <- compact(map(res, "result"))
-  reps <- rbindlist(map(ok, "rep"),  use.names = TRUE)
-  bins <- rbindlist(map(ok, "bins"), use.names = TRUE)
+  tag   <- cell_tag(S, H2, CV, K, t_max)
+  f_rep <- file.path(CELLDIR, paste0("reps_", tag, ".csv"))
+  f_bin <- file.path(CELLDIR, paste0("bins_", tag, ".csv"))
+  if (file.exists(f_rep)) { message(tag, ": already done, skipping"); quit(save = "no") }
 
-  tag <- paste0("N", N_inds)
+  t0  <- Sys.time()
+  res <- lapply(seq_len(N_REPS), function(REP)
+    tryCatch(run_one(S, REP, H2, CV, N_INDS, K, t_max),
+             error = function(e) { message("rep ", REP, " failed: ", conditionMessage(e)); NULL }))
+  ok <- Filter(Negate(is.null), res)
+  if (!length(ok)) stop("all reps failed")
+
+  write_atomic(rbindlist(lapply(ok, `[[`, "bins"), use.names = TRUE), f_bin)
+  write_atomic(rbindlist(lapply(ok, `[[`, "rep"),  use.names = TRUE), f_rep)  # written last = "done" marker
+  message(sprintf("%s: %d/%d reps in %.1f min", tag, length(ok), N_REPS,
+                  as.numeric(difftime(Sys.time(), t0, units = "mins"))))
+
+} else if (mode == "collect") {
+
+  library(ggplot2); library(scales)
+
+  cells <- cell_grid()
+  tags  <- cells[, cell_tag(S, H2, CV, K, t_max)]
+  f_rep <- file.path(CELLDIR, paste0("reps_", tags, ".csv"))
+  f_bin <- file.path(CELLDIR, paste0("bins_", tags, ".csv"))
+  have  <- file.exists(f_rep)
+  if (!any(have)) stop("no finished cells in ", CELLDIR)
+  if (!all(have)) warning(sum(!have), " cells missing. Rerun with: sbatch --array=",
+                          paste(which(!have), collapse = ","), " v5_submit.sh")
+
+  reps <- rbindlist(lapply(f_rep[have], fread), use.names = TRUE)
+  bins <- rbindlist(lapply(f_bin[have], fread), use.names = TRUE)
+  short <- reps[, .N, by = .(S, H2, CV, K, t_max)][N < N_REPS]
+  if (nrow(short)) { message("Cells with failed reps:"); print(short) }
+
+  tag <- paste0("N", N_INDS)
   fwrite(reps, file.path(DATDIR, paste0("reps_", tag, ".csv")))
   fwrite(bins, file.path(DATDIR, paste0("bins_", tag, ".csv")))
 
@@ -170,7 +236,7 @@ run_for_N <- function(N_inds, n_workers = NULL) {
     if (!nrow(r)) next
     sfx <- paste0(tag, "_K", kk, "_t", tt)
     ttl <- sprintf("N = %s, %d bins, ages 0-%d gen",
-                   format(N_inds, big.mark = ",", scientific = FALSE), kk, tt)
+                   format(N_INDS, big.mark = ",", scientific = FALSE), kk, tt)
 
     ## (i) estimates of s - pseudo-log y axis (handles 0 and negatives)
     p1 <- ggplot(r[is.finite(s_hat)], aes(S_f, s_hat)) +
@@ -228,16 +294,11 @@ run_for_N <- function(N_inds, n_workers = NULL) {
     ggsave(file.path(OUTDIR, paste0("h2m_",         sfx, ".png")), p4, width = W, height = Hh, dpi = 150)
   }
 
-  list(reps = reps, bins = bins, summary = summ, errors = errs)
-}
+  fwrite(reps, file.path(DATDIR, "reps_allN.csv"))
+  fwrite(summ, file.path(DATDIR, "summary_allN.csv"))
 
-## ---- run -------------------------------------------------------------------
-all_results <- map(N_vals, run_for_N)
-names(all_results) <- paste0("N", N_vals)
-fwrite(rbindlist(map(all_results, "reps")),    file.path(DATDIR, "reps_allN.csv"))
-fwrite(rbindlist(map(all_results, "summary")), file.path(DATDIR, "summary_allN.csv"))
+  ## ---- headline numbers ---------------------------------------------------
+  print(summ[S == 0.01, .(K, t_max, CV, H2, power, bias, sd_s, rel_prec, mean_n_neg)][
+        order(K, t_max, CV, -H2)])
 
-## ---- headline numbers ------------------------------------------------------
-all_summ <- rbindlist(map(all_results, "summary"))
-print(all_summ[S == 0.01, .(K, t_max, CV, H2, power, bias, sd_s, rel_prec, mean_n_neg)][
-      order(K, t_max, CV, -H2)])
+} else stop("usage: v5_sweep.R grid | cell S H2 CV K t_max | collect")
