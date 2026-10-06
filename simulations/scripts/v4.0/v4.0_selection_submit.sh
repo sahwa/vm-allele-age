@@ -16,4 +16,4 @@ SEED=$((IDX / 4 + 1))
 OUT=/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v4.0
 
 slim -s $SEED -d N=50000 -d N_SAMPLE=2500 -d PI_TARGET=1.0 -d END_TICK=600 \
-     -d K_SEL=$K -d "OUTFILE='/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v4.0/sing_K${K}_seed${SEED}.tsv'" v4.0_selection.slim
+     -d K_SEL=$K -d "OUTFILE_TICKS='/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v4.0/sing_K${K}_seed${SEED}.TICKS.tsv'" -d "OUTFILE_END='/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/v4.0/sing_K${K}_seed${SEED}.END.tsv'" v4.0_selection.slim

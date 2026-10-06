@@ -2,7 +2,7 @@
 #SBATCH --job-name=vm_v5
 #SBATCH --partition=short
 #SBATCH --array=1-300
-#SBATCH --cpus-per-task=1
+#SBATCH --cpus-per-task=2
 #SBATCH --time=04:00:00
 #SBATCH --output=v5_%A_%a.out
 #SBATCH --error=v5_%A_%a.err

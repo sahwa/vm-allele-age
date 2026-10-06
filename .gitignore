@@ -10,6 +10,7 @@
 # Data
 *.csv
 !example_*.csv
+*.tsv
 
 # Python
 __pycache__/
@@ -32,4 +33,5 @@ __pycache__/
 
 simulations/data/*
 simulations/programs/ConvertGCTA-GRM_to_MPH-GRM
+simulations/programs/mph
 simulations/programs/mph

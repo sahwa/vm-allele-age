@@ -236,11 +236,14 @@ if (mode == "grid") {
 
   ## ---- per-cell, per-method summary ----------------------------------------
   summ <- long[, {
-    sh <- s_hat[is.finite(s_hat)]; z <- sh - S
-    hm <- h2m_hat[is.finite(h2m_hat) & h2m_hat > 0]
+    sh  <- s_hat[is.finite(s_hat)]; z <- sh - S
+    okh <- is.finite(h2m_hat)
+    zh  <- h2m_hat[okh] - h2m_true[okh]          # per-rep error in h2m
+    rh  <- h2m_hat[okh] / h2m_true[okh]          # per-rep ratio to the truth
+    hm  <- h2m_hat[okh & h2m_hat > 0]
     .(n_total = .N, n_fit = length(sh), fail_rate = 1 - length(sh) / .N,
       mean_n_neg = mean(n_neg, na.rm = TRUE),
-      h2m_true   = h2m_true[1],
+      h2m_true   = mean(h2m_true),
       mean_s = if (length(sh)) mean(sh) else NA_real_,
       median_s = if (length(sh)) median(sh) else NA_real_,
       bias    = if (length(z)) mean(z) else NA_real_,
@@ -250,11 +253,17 @@ if (mode == "grid") {
       medae   = if (length(z)) median(abs(z)) else NA_real_,
       rel_prec = if (length(sh) >= 2 && S > 0) sd(sh) / S else NA_real_,
       power   = mean(detected, na.rm = TRUE),
+      h2m_bias      = if (length(zh)) mean(zh) else NA_real_,
+      h2m_se_bias   = if (length(zh) >= 2) sd(zh) / sqrt(length(zh)) else NA_real_,
+      h2m_rel_bias  = if (length(rh)) mean(rh) - 1 else NA_real_,
+      h2m_med_ratio = if (length(rh)) median(rh) else NA_real_,
       gm_h2m   = if (length(hm)) exp(mean(log(hm))) else NA_real_,
       gmed_h2m = if (length(hm)) median(hm) else NA_real_,
       fold_lo  = if (length(hm)) quantile(hm, 0.025) else NA_real_,
       fold_hi  = if (length(hm)) quantile(hm, 0.975) else NA_real_)
   }, by = .(method, S, H2, CV, N_inds, K, t_max)]
+
+
   setorder(summ, method, K, t_max, CV, -H2, S)
   fwrite(summ, file.path(DATDIR, paste0("summary_", tag, ".csv")))
 
@@ -324,11 +333,29 @@ if (mode == "grid") {
            title = paste0("Mutational heritability: ", ttl),
            subtitle = "Red = truth; log axis. Literature V_M/V_P is typically ~1e-3.") + th
 
+    hb <- r[is.finite(h2m_hat) & h2m_hat > 0,
+            .(m = mean(log(h2m_hat / h2m_true)),
+              se = sd(log(h2m_hat / h2m_true)) / sqrt(.N)),
+            by = .(method, S_f, CV_f, H2_f)]
+
+    p5 <- ggplot(hb, aes(S_f, exp(m), colour = method)) +
+      geom_hline(yintercept = 1, colour = COL_TRUTH, linetype = "dashed") +
+      geom_pointrange(aes(ymin = exp(m - 1.96 * se), ymax = exp(m + 1.96 * se)),
+                      size = 0.35, position = dg2) +
+      facet_grid(CV_f ~ H2_f) + col_scale +
+      scale_y_log10() +
+      labs(x = "True s", y = expression(hat(V)[M] / V[M] ~ "(estimate / truth)"),
+           title = paste0("Bias in mutational heritability: ", ttl),
+           subtitle = "Geometric mean ratio with 95% CI; dashed red = unbiased (ratio of 1); log axis") + th
+
+
+
     W <- 14; Hh <- 7.5
     ggsave(file.path(OUTDIR, paste0("s_estimates_", sfx, ".png")), p1, width = W, height = Hh, dpi = 150)
     ggsave(file.path(OUTDIR, paste0("s_bias_",      sfx, ".png")), p2, width = W, height = Hh, dpi = 150)
     ggsave(file.path(OUTDIR, paste0("s_power_",     sfx, ".png")), p3, width = W, height = Hh, dpi = 150)
     ggsave(file.path(OUTDIR, paste0("h2m_",         sfx, ".png")), p4, width = W, height = Hh, dpi = 150)
+    ggsave(file.path(OUTDIR, paste0("h2m_bias_",    sfx, ".png")), p5, width = W, height = Hh, dpi = 150)
   }
 
   ## ---- headline numbers ---------------------------------------------------
