@@ -7,7 +7,7 @@
 library(data.table)
 RNGkind("L'Ecuyer-CMRG")   # what furrr's seed = TRUE was using underneath set.seed()
 
-VERSION <- "v5.1"
+VERSION <- "v3.2"
 BASE <- "/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations"
 source(file.path(BASE, "programs/diagGREML.R"))
 
@@ -48,39 +48,81 @@ write_atomic <- function(x, f) { tmp <- paste0(f, ".tmp"); fwrite(x, tmp); file.
 ## ---- joint REML ------------------------------------------------------------
 ## y_i ~ N(Z_i b, v_i),  v_i = s2m * sum_k x_ik exp(-s t_k) + s2e
 ## C: N x K matrix of singleton counts; t: bin ages; Z: fixed-effect design matrix
-fit_sel_reml <- function(y, C, t, Z = matrix(1, length(y), 1), reml = TRUE) {
-  storage.mode(C) <- "double"                  # avoid re-coercing integer counts at every evaluation
+## Joint REML by profile likelihood over s.
+## y_i ~ N(Z_i b, v_i),  v_i = a * w_i(s) + s2e,
+## w_i(s) = sum_k x_ik exp(-s (t_k - t0)), scaled to mean 1; t0 = count-weighted mean age.
+## a can be negative. sigma2_m is the per-mutation variance extrapolated to age 0.
+fit_sel_reml <- function(y, C, t, Z = matrix(1, length(y), 1), s_max = 0.1) {
+  storage.mode(C) <- "double"
+  cm <- colMeans(C)
+  t0 <- sum(cm * t) / sum(cm)
+  tc <- t - t0
+  vy <- var(y)
+  theta <- c(0.05 * vy, 0.95 * vy)              # (a, s2e); warm-started across values of s
 
-  var_i <- function(par)                       # par = (log s2m, s, log s2e)
-    exp(par[1]) * as.vector(C %*% exp(-par[2] * t)) + exp(par[3])
-
-  gls <- function(v) {                         # fixed effects given the variances
-    ZtViZ <- crossprod(Z, Z / v)
-    list(ZtViZ = ZtViZ, b = solve(ZtViZ, crossprod(Z, y / v)))
+  ## REML fit of (a, s2e) for one fixed s, by Fisher scoring with step-halving
+  inner <- function(s, th) {
+    w <- as.vector(C %*% exp(-s * tc)); wbar <- mean(w); w <- w / wbar
+    obj <- function(th) {
+      v <- th[1] * w + th[2]
+      if (th[2] <= 0 || min(v) <= 0) return(NULL)
+      ZtViZ <- crossprod(Z, Z / v)
+      b <- solve(ZtViZ, crossprod(Z, y / v))
+      r <- y - as.vector(Z %*% b)
+      list(v = v, r = r, b = as.vector(b), ZtViZ = ZtViZ,
+           nll = 0.5 * (sum(log(v)) + sum(r^2 / v) + as.numeric(determinant(ZtViZ)$modulus)))
+    }
+    cur <- obj(th)
+    if (is.null(cur)) { th <- c(0, vy); cur <- obj(th) }
+    converged <- FALSE
+    for (it in 1:50) {
+      v <- cur$v
+      h <- rowSums((Z %*% solve(cur$ZtViZ)) * Z)            # REML leverage term
+      q <- cur$r^2 / v^2 - (1 - h / v) / v
+      score <- 0.5 * c(sum(q * w), sum(q))
+      info  <- 0.5 * matrix(c(sum(w^2 / v^2), sum(w / v^2),
+                              sum(w / v^2),   sum(1 / v^2)), 2)
+      step <- solve(info, score)
+      new <- NULL
+      for (half in 1:25) {
+        new <- obj(th + step)
+        if (!is.null(new) && new$nll <= cur$nll + 1e-8) break
+        new <- NULL; step <- step / 2
+      }
+      if (is.null(new)) break
+      th <- th + step; cur <- new
+      if (max(abs(step)) < 1e-8 * vy) { converged <- TRUE; break }
+    }
+    list(nll = cur$nll, th = th, b = cur$b, wbar = wbar, converged = converged)
   }
 
-  nll <- function(par) {
-    v <- var_i(par)
-    if (!all(is.finite(v)) || any(v <= 0)) return(Inf)   # reject overflowing trial steps
-    g <- gls(v)
-    r <- y - as.vector(Z %*% g$b)
-    out <- sum(log(v)) + sum(r^2 / v)
-    if (reml) out <- out + as.numeric(determinant(g$ZtViZ)$modulus)
-    0.5 * out
-  }
+  prof <- function(s) { f <- inner(s, theta); theta <<- f$th; f$nll }
 
-  start <- c(log(0.02 * var(y) / mean(rowSums(C))), 0, log(0.98 * var(y)))
-  opt <- optim(start, nll, method = "BFGS", hessian = TRUE,
-               control = list(parscale = c(1, 1e-2, 1), reltol = 1e-12, maxit = 500))
+  ## coarse search on a grid that is dense near zero, then refine around the best point
+  g    <- s_max * 10^seq(-3, 0, length.out = 13)
+  grid <- c(-rev(g), 0, g)
+  pg   <- vapply(grid, prof, 0)
+  j    <- which.min(pg)
+  s_hat <- optimize(prof, c(grid[max(j - 1, 1)], grid[min(j + 1, length(grid))]),
+                    tol = 1e-6)$minimum
+  f <- inner(s_hat, theta)
+  at_bound <- abs(s_hat) > s_max * (1 - 1e-3)
 
-  se <- tryCatch(suppressWarnings(sqrt(diag(solve(opt$hessian)))),
-                 error = function(e) rep(NA_real_, 3))
-  list(s = opt$par[2], s_se = se[2],
-       sigma2_m = exp(opt$par[1]), log_sigma2_m_se = se[1],
-       sigma2_e = exp(opt$par[3]),
-       b = as.vector(gls(var_i(opt$par))$b),
-       logLik = -opt$value, convergence = opt$convergence)
+  ## SE of s from the curvature of the profile; likelihood-ratio test of s = 0
+  h    <- 2e-4
+  curv <- (prof(s_hat + h) - 2 * f$nll + prof(s_hat - h)) / h^2
+  s_se <- if (!at_bound && is.finite(curv) && curv > 0) 1 / sqrt(curv) else NA_real_
+  lrt  <- max(0, 2 * (pg[grid == 0] - f$nll))
+
+  a_t0 <- f$th[1] / f$wbar                       # per-mutation variance at age t0
+  list(s = s_hat, s_se = s_se,
+       sigma2_m = a_t0 * exp(s_hat * t0), log_sigma2_m_se = NA_real_,
+       sigma2_e = f$th[2], b = f$b,
+       logLik = -f$nll, convergence = if (f$converged) 0L else 1L,
+       lrt = lrt, lrt_p = pchisq(lrt, 1, lower.tail = FALSE),
+       at_bound = at_bound, sigma2_t0 = a_t0, t0 = t0)
 }
+
 
 ## ---- simulate one dataset --------------------------------------------------
 sim_diag <- function(S, REP, H2, CV, N_inds, K, t_max) {
@@ -275,30 +317,57 @@ if (mode == "grid") {
   }
 
   col_scale <- scale_colour_manual(values = COL_M, name = NULL)
-  th  <- theme_bw() + theme(panel.grid.minor = element_blank(), legend.position = "bottom")
+  th  <- theme_bw() + theme(panel.grid.minor = element_blank(), legend.position = "bottom", axis.text = element_text(size=16), axis.title = element_text(size=16), strip.text = element_text(size=16))
   dg  <- position_dodge(width = 0.75)
   jd  <- position_jitterdodge(jitter.width = 0.12, dodge.width = 0.75)
   dg2 <- position_dodge(width = 0.5)
 
   for (kk in K_VALS) for (tt in T_VALS) {
-    r <- long[K == kk & t_max == tt]; s <- summ[K == kk & t_max == tt]
+  r <- long[K == kk & t_max == tt]; s <- summ[K == kk & t_max == tt]
+
+  CV_select <- 0.65
+  S_select  <- c(0.001, 0.01)
+  H2_select <- c(0.034, 0.02, 0.01)
+
+  r <- r[CV %in% CV_select & S %in% S_select & H2 %in% H2_select]
+  s <- s[CV %in% CV_select & S %in% S_select & H2 %in% H2_select]
     if (!nrow(r)) next
     sfx <- paste0(tag, "_K", kk, "_t", tt)
     ttl <- sprintf("N = %s, %d bins, ages 0-%d gen",
                    format(N_INDS, big.mark = ",", scientific = FALSE), kk, tt)
 
     ## (i) estimates of s - pseudo-log y axis (handles 0 and negatives)
+    tru_s <- unique(r[, .(S_f, S, CV_f, H2_f)])
+    ann_tab <- function(r, est, truth) {
+    a <- r[is.finite(get(est)),
+            .(bias = mean(get(est) - get(truth)),
+              rmse = sqrt(mean((get(est) - get(truth))^2)),
+              n = .N),
+            by = .(method, S_f, CV_f, H2_f)]
+      a[, lab := sprintf("bias %s\nRMSE %s",
+                        formatC(bias, format = "g", digits = 2, flag = "+"),
+                        formatC(rmse, format = "g", digits = 2))]
+      a[]
+    }
+
+    ann_s <- ann_tab(r, "s_hat",   "S")          # for the s figure
+    ann_v <- ann_tab(r, "h2m_hat", "h2m_true")   # for the V_M figure
+
     p1 <- ggplot(r[is.finite(s_hat)], aes(S_f, s_hat, colour = method)) +
       geom_hline(yintercept = 0, colour = "grey70") +
+      geom_point(position = jd, size = 1, alpha = 0.25) +
       geom_boxplot(outlier.shape = NA, fill = NA, width = 0.6, position = dg) +
-      geom_point(position = jd, size = 0.3, alpha = 0.25) +
-      geom_point(data = unique(r[, .(S_f, S, CV_f, H2_f)]), aes(S_f, S),
-                 colour = COL_TRUTH, size = 2.5, inherit.aes = FALSE) +
+      geom_errorbar(data = tru_s, aes(x = S_f, ymin = S, ymax = S), width = 0.9,
+                    colour = COL_TRUTH, linewidth = 0.8, inherit.aes = FALSE) +
       facet_grid(CV_f ~ H2_f) + col_scale +
-      scale_y_continuous(trans = pseudo_log_trans(sigma = 1e-4),
-                         breaks = c(-1e-2, -1e-3, 0, 1e-4, 1e-3, 1e-2, 3e-2, 1e-1)) +
+      geom_text(data = ann_s, aes(S_f, Inf, label = lab, colour = method),
+          position = position_dodge(width = 0.9), vjust = 1.2,
+          size = 2.6, lineheight = 0.9, show.legend = FALSE) +
+      scale_y_continuous(trans = pseudo_log_trans(sigma = 2e-3),
+                        breaks = c(-0.1, -0.01, -0.001, 0, 0.001, 0.01, 0.03, 0.1),
+                        labels = c("-0.1", "-0.01", "-0.001", "0", "0.001", "0.01", "0.03", "0.1")) +
       labs(x = "True s", y = expression(hat(s)), title = paste0("Estimates of s: ", ttl),
-           subtitle = "Pseudo-log y axis (linear near zero, log beyond); red = truth") + th
+          subtitle = "Pseudo-log y axis; red bar = truth; points at \u00b10.1 are joint fits at the search bound") + th
 
     ## (ii) bias in s
     p2 <- ggplot(s, aes(S_f, bias, colour = method)) +
@@ -322,26 +391,34 @@ if (mode == "grid") {
 
     ## (iv) mutational heritability V_M / V_P
     tru <- unique(r[, .(S_f, CV_f, H2_f, h2m_true)])
-    p4 <- ggplot(r[is.finite(h2m_hat) & h2m_hat > 0], aes(S_f, h2m_hat, colour = method)) +
+    p4 <- ggplot(r[is.finite(h2m_hat)], aes(S_f, h2m_hat, colour = method)) +
+      geom_hline(yintercept = 0, colour = "grey70") +
       geom_boxplot(outlier.shape = NA, fill = NA, width = 0.6, position = dg) +
-      geom_point(position = jd, size = 0.3, alpha = 0.25) +
+      geom_point(position = jd, size = 1, alpha = 0.25) +
       geom_point(data = tru, aes(S_f, h2m_true), colour = COL_TRUTH, size = 2.5,
-                 inherit.aes = FALSE) +
+                inherit.aes = FALSE) +
       facet_grid(CV_f ~ H2_f) + col_scale +
-      scale_y_log10(labels = label_number(accuracy = 0.0001)) +
+      scale_y_continuous(trans = pseudo_log_trans(sigma = 1e-5),
+                        breaks = c(-1e-3, -1e-4, 0, 1e-4, 1e-3, 1e-2),
+                        labels = function(x) format(x, scientific = TRUE)) +
+      coord_cartesian(ylim = c(-3e-3, 3e-2)) +
+      geom_text(data = ann_v, aes(S_f, Inf, label = lab, colour = method),
+          position = position_dodge(width = 0.9), vjust = 1.2,
+          size = 2.6, lineheight = 0.9, show.legend = FALSE) +
       labs(x = "True s", y = expression(hat(V)[M] / V[P]),
-           title = paste0("Mutational heritability: ", ttl),
-           subtitle = "Red = truth; log axis. Literature V_M/V_P is typically ~1e-3.") + th
+          title = paste0("Mutational heritability: ", ttl),
+          subtitle = "Red = truth; pseudo-log axis, includes zero and negative estimates; view clipped") + th
 
     hb <- r[is.finite(h2m_hat) & h2m_hat > 0,
             .(m = mean(log(h2m_hat / h2m_true)),
               se = sd(log(h2m_hat / h2m_true)) / sqrt(.N)),
             by = .(method, S_f, CV_f, H2_f)]
 
+    ## (v) mutational heritability V_M / V_P bias
     p5 <- ggplot(hb, aes(S_f, exp(m), colour = method)) +
       geom_hline(yintercept = 1, colour = COL_TRUTH, linetype = "dashed") +
       geom_pointrange(aes(ymin = exp(m - 1.96 * se), ymax = exp(m + 1.96 * se)),
-                      size = 0.35, position = dg2) +
+                      size = 1, position = dg2) +
       facet_grid(CV_f ~ H2_f) + col_scale +
       scale_y_log10() +
       labs(x = "True s", y = expression(hat(V)[M] / V[M] ~ "(estimate / truth)"),
@@ -359,7 +436,6 @@ if (mode == "grid") {
   }
 
   ## ---- headline numbers ---------------------------------------------------
-  print(summ[S == 0.01, .(method, K, t_max, CV, H2, power, bias, sd_s, rel_prec, fail_rate)][
-        order(K, t_max, CV, -H2, method)])
+  print(summ[S == 0.01, .(method, K, t_max, CV, H2, power, bias, sd_s, rel_prec, fail_rate)][order(K, t_max, CV, -H2, method)])
 
 } else stop("usage: v5_sweep.R grid | cell S H2 CV K t_max | collect")
