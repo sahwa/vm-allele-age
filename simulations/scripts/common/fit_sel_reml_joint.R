@@ -86,5 +86,7 @@ fit_sel_reml <- function(y, C, t, Z = matrix(1, length(y), 1), s_max = 0.1,
        sigma2_e = f$th[2], b = f$b,
        logLik = -f$nll, convergence = if (f$converged) 0L else 1L,
        lrt = lrt, lrt_p = pchisq(lrt, 1, lower.tail = FALSE),
-       at_bound = at_bound, sigma2_t0 = a_t0, t0 = t0, s_lo = s_lo, s_hi = s_hi)
+       at_bound = at_bound, sigma2_t0 = a_t0, t0 = t0, s_lo = s_lo, s_hi = s_hi,
+       h2_sing = f$th[1] / (f$th[1] + f$th[2])
+      )
 }
