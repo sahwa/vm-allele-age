@@ -87,8 +87,11 @@ fit_sel_reml <- function(y, C, t, Z = matrix(1, length(y), 1),
                     tol = 1e-6)$minimum
   f <- inner(s_hat, theta0)
 
-  at_bound <- abs(s_hat - s_lo) < 1e-3 * max(1, abs(s_lo)) ||
-              abs(s_hat - s_hi) < 1e-3 * max(1, abs(s_hi))
+  ## Tolerance must scale with the search RANGE, not with max(1, |bound|):
+  ## for the hyperbolic curve s_lo = -0.9/max(t) is tiny, and an absolute 1e-3
+  ## would flag every estimate near zero as a boundary fit.
+  rng <- s_hi - s_lo
+  at_bound <- (s_hat - s_lo) < 1e-3 * rng || (s_hi - s_hat) < 1e-3 * rng
 
   h    <- min(2e-4, 0.5 * (s_hat - s_lo), 0.5 * (s_hi - s_hat))
   curv <- if (h > 0) (prof(s_hat + h) - 2 * f$nll + prof(s_hat - h)) / h^2 else NA_real_
