@@ -1,8 +1,10 @@
 library(parallel)
 library(data.table)
+library(patchwork)
 
 COMMON_DIR="/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/scripts/common"
 source(file.path(COMMON_DIR, "fit_sel_reml_joint.R"))
+source("/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/scripts/common/themes/zoo_theme.R")
 
 FIGS="/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/figs/tests/test_allele_age_noise"
 
@@ -80,18 +82,20 @@ res <- mclapply(seq_len(N_REPS), function(REP) {
   rbindlist(lapply(K_vals, function(K) {
     m  <- merge_bins(C_obs, d$t_fine, K)           # or d$C for the error-free comparison
     ft <- fit_sel_reml(y = d$Y, C = m$C, t = m$t, curve = "exp")
-      data.table(REP = REP, K = K,
-               s_hat    = if (is.null(ft)) NA_real_ else ft$s,
-               s_se     = if (is.null(ft)) NA_real_ else ft$s_se,
-               sigma2_m = if (is.null(ft)) NA_real_ else ft$sigma2_m,
-               at_bound = if (is.null(ft)) NA else ft$at_bound,
-               y_var = var(d$Y)
+      data.table(
+        REP = REP, K = K,
+        s_hat    = if (is.null(ft)) NA_real_ else ft$s,
+        s_se     = if (is.null(ft)) NA_real_ else ft$s_se,
+        sigma2_m = if (is.null(ft)) NA_real_ else ft$sigma2_m,
+        at_bound = if (is.null(ft)) NA else ft$at_bound,
+        y_var = var(d$Y)
       )
   }))
 }, mc.cores = N_CORES)
 res <- rbindlist(res)
 
 fwrite(res, "/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/tests/test_allele_age_noise/all_reps_K_res.txt")
+res = fread("/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/tests/test_allele_age_noise/all_reps_K_res.txt")
 
 summ <- res[, .(n_fit             = sum(is.finite(s_hat)),
                 s_median          = median(s_hat, na.rm = TRUE),
@@ -114,8 +118,12 @@ p_s_file = file.path(FIGS, "S_est_per_K.png")
 ggsave(p_s_file, p_s)
 
 p_v_m = res %>%
-  ggplot(aes(x=K, y=s_hat)) +
+  ggplot(aes(x=K, y=sigma2_m)) +
   ggbeeswarm::geom_quasirandom() +
-  geom_hline(yintercept = S, colour = 'red', linetype = 'dashed')
-p_s_file = file.path(FIGS, "S_est_per_K.png")
-ggsave(p_s_file, p_s)
+  geom_hline(yintercept = 1, colour = 'red', linetype = 'dashed') +
+  scale_y_log10()
+
+p_combined = p_s + p_v_m
+
+p_combined_filed = file.path(FIGS, "v_m_s_est_per_K.png")
+ggsave(p_combined_filed, p_combined)

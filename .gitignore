@@ -31,6 +31,7 @@ __pycache__/
 .RData
 .Rproj.user/
 
+data/*
 simulations/data/*
 simulations/programs/ConvertGCTA-GRM_to_MPH-GRM
 simulations/programs/mph
