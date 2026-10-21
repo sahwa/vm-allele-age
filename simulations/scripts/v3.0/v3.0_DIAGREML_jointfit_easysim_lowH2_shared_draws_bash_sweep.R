@@ -158,6 +158,7 @@ sim_diag <- function(S, REP, H2, CV, N_inds, K, t_max, count = "indep") {
     sapply(seq_len(K), function(k) rpois(N_inds, rgamma(N_inds, shape, rate = shape / LAMBDA)))
   }
   colnames(C) <- paste0("t", round(t_mid))
+  rownames(C) = paste0("ind_", 1:nrow)
   s2 <- SIGMA_BETA^2 * exp(-S * t_mid)
   g  <- rowSums(sqrt(sweep(C, 2, s2, `*`)) * matrix(rnorm(N_inds * K), N_inds, K))
   Y  <- g + rnorm(N_inds, 0, sqrt(var(g) * (1 - H2) / H2))
