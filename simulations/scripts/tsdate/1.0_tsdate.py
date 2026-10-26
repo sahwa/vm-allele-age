@@ -29,7 +29,7 @@ sing_ages = ages_all[is_sample[mut_node]]
 
 
 dates = tsdate.date(ts, mutation_rate = MU)
-
+dates.dump(pathlib.Path(DATA, "sim.trees.dates"))
 
 afs = ts.allele_frequency_spectrum(polarised=True, span_normalise=False)
 n_sing, n_sites = int(afs[1]), ts.num_sites
