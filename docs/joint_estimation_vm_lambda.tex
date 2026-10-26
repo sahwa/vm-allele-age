@@ -1,0 +1,125 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsfonts}
+\usepackage[parfill]{parskip}
+\title{Joint estimation of $\sigma_{m}^{2}$, $\lambda$ and $\sigma_{e}^{2}$ from singleton count data}
+\author{Sam Morris}
+\date{October 2026}
+
+\begin{document}
+
+
+\maketitle
+
+\section{Version with bins}
+
+\subsection{Deriving likelihood}
+
+We assume we have a dataset of $N$ unrelated individuals.
+
+Start by denoting $\boldsymbol{Y}$ as a vector of length $N$ standardised phenotypes. We define $\boldsymbol{X}$ as a matrix where $x_{i_k}$ as the number of singletons that individual $i$ carries in bin $k$. The singleton counts are observed directly. Bin $k$ contains singletons of age $t_k$ generations old. Note that this makes the simplifying assumption that all singletons within a bin have the same age, which is the midpoint of the bin. If we use a large number of small bins, this should be a reasonable simplifying assumption.
+
+An individuals phenotype can be given as:
+\begin{equation}
+    y_{i} = \mu + \sum_{k} \sum_{j \in \mathcal{S}_{ik}} \beta_{kj} + e_i
+\end{equation}
+
+where $\mu$ is the population mean phenotypic value, $\mathcal{S}_{ik}$ is the set of singletons that individual $i$ carriers in bin $k$. $\beta_{kj}$ is the effect size for singleton $j$ in bin $k$ and $\beta_{kj} \sim \mathcal{N}(0, \sigma_k^2)$.
+
+All effects and residuals are be mutually independent. Since the singleton effects have mean of zero, and the variances of independent terms are additive, we can sum the variance terms across bins:
+
+\begin{equation}
+    y_{i} | x_{i} \sim \mathcal{N}( \mu, \sum_{k} x_{i_k} \sigma_{k}^{2} + \sigma_{e}^{2}).
+    \label{eq:conditional}
+\end{equation}
+
+We aim to estimate the parameter $s$ and $\sigma_{m}^2$. $\sigma_{m}^2$ is the variance contributed by a single mutation before selection has had a chance to act upon it. $s$ is the rate at which $\sigma_{m}^2$ variance decays over time. Specifically, the variance contributed for mutations of age $t$ can be given as:
+
+\begin{equation}
+    \sigma_{k}^2 = \sigma_{m}^{2} e^{-\lambda{t_{k}}}
+    \label{eq:decay}
+\end{equation}
+
+We can also consider a link between $\sigma_k^2$ amnd
+
+This assumes that a fixed proportion of $\sigma_{m}^2$ is lost per generation.
+
+Substituting equation~\eqref{eq:decay} into equation~\eqref{eq:conditional}:
+
+gives
+\begin{equation}
+    y_{i} | x_{i} \sim \mathcal{N}( \mu, \sum_{k} x_{i_k} \sigma_{m}^{2} e^{-\lambda{t_{k}}} + \sigma_{e}^{2})
+\end{equation}
+
+Because each singleton is carried by exactly one individual, no effects are shared between individuals, and the residuals of unrelated individuals are assumed to be independent. The phenotypes are therefore independent conditional on $\mathbf{X}$, and the likelihood is:
+
+\begin{equation}
+    \mathcal{L} = \prod_{i=1}^{N} \mathcal{N}( \mu, \sum_{k} x_{i_k} \sigma_{m}^{2} e^{-sT_{k}} + \sigma_{e}^{2})
+\end{equation}
+
+\subsection{Link between }
+
+\subsection{Priors}
+
+We place the prior for $\sigma_m^2$ on the mutational heritability,
+$h_m^2 = V_M / V_P$, where $V_M = U \sigma_m^2$ is the mutational variance, $U$
+is the number of new mutations per individual per generation, and $V_P$ is the
+phenotypic variance ($V_P = 1$ for a standardised phenotype). THerefore, the priors for each parameter is:
+\begin{align}
+    \mu &\sim \mathcal{N}(0,\, 0.1^2) \\
+    \sigma_e^2 &\sim \mathcal{N}^{+}(0,\, 1) \\
+    \log_{10}(h_m^2) &\sim \mathcal{N}(-3,\, 1),
+        \qquad \sigma_m^2 = \frac{h_m^2\, V_P}{U} \\
+    s &\sim \mathcal{N}(0,\, 0.03^2)
+\end{align}
+where the second argument of each normal distribution is a variance and
+$\mathcal{N}^{+}$ denotes a normal distribution truncated to positive values.
+The prior on $s$ is centred on zero and allows negative values, so that a posterior concentrated above zero gives evidence of selection.
+
+
+\subsection{Posterior}
+
+Putting it all together:
+
+\begin{equation}
+    p(\mu, \sigma^2_e, \sigma^2_m, s \mid \mathbf{y}, \mathbf{X}) \;\propto\; \prod_{i=1}^{N} \mathcal{N}\!\big(y_i \mid \mu, v_i\big) \;\times\; p(\mu)\,p(\sigma^2_e)\,p(\sigma^2_m)\,p(s)
+\end{equation}
+
+\section{Version without bins}
+
+If each singleton is instead assigned its own age $t_{ij}$, the variance becomes
+\begin{equation}
+    v_i = \sigma_m^2 \sum_{j=1}^{x_i} e^{-s t_{ij}} + \sigma_e^2 ,
+\end{equation}
+where $x_i$ is the total number of singletons carried by individual $i$. The binned model is the approximation in which $t_{ij}$ is replaced by $t_k$ for every singleton in bin $k$. The sum depends on $s$, so it must be calculated over every singleton in the sample at each evaluation of the likelihood. In practice we therefore use the binned model with many narrow bins. Because the number of parameters does not depend on $K$, increasing $K$ carries no statistical cost.
+
+\section{Power to detect $V_M$ and $\lambda$}
+
+We would like to know, for a given $\lambda > 0$ and $\alpha$ significance level, what is the chance our model returns a significant result. Power = $\Phi\frac{(\lambda_{true}}{SE} - z_{a}$. Therefore, we need to estimate SE($\hat{\lambda}$).
+
+If $\lambda > 0$ then we expect an individual who carries more older singletons to have smaller $E[y_{i}]$.
+
+
+\subsection{Batching}
+
+We now consider a model where, to improve power, we split individuals into $B$ equally sized batches. Singletons would be ascertained within batches, but their dates inferred from the entire cohort. I propose this will improve power for several reasons, listed below.
+
+\subsubsection{Increasing $h^2_{sing}$}
+
+Under the neutral coalescent model, the expected site frequency spectrum is $\mathbb{E}[\zeta_{i}] = \frac{\theta}{i}$, where $\zeta_{i}$ is the number of sites with a derived allele count of $i$ and $\theta = 4N_{e} \mu L$. So $\mathbb{E}[\zeta_1] = \frac{\theta}{1} = \theta $. Therefore, the number of segregating singletons is a function of $N_{e}$, the effect population size of the total population, not $N$, the number of indviduals you have sampled.
+
+A $MAC = 1$ variant is carried by exactly one person. If we have $\theta$ singleton sites and $n/2$ people to share them, then each person has on average $\frac{\theta}{n/2} = \frac{2\theta}{n}$ singletons per person. Therefore, the number of singletons an individual carried doubles if the sample fraction is halved.
+
+A variant with MAC $=1$ has $p=1/n$ and therefore contributes $2pq\beta^2 \approx (2/n)\beta^2$ towards heritability. If we have $\theta$ segregating variants then $V_sing$, the additive variance due to singletons is $\theta \cdot (2/n)\beta^2$. If $n=2B$, then total singleton variance is proportional to $1/B$.
+
+Three things seem to limit the effectiveness of batching individuals. Firstly, the amount of indpendent information falls as a singleton is shared across multiple batches.
+
+\begin{enumerate}
+    \item As we increase $B$ - the actual $N$ stays the same, but the amount of independent information falls. For example, if we set $B=10{,}000$, the sample singleton might be shared across 18 people in 18 different batches. If we set $k$ as the number of batches in which a given variant is a singleton.
+    \item The singleton count eventually ceilings out. As we reduce $B$
+\end{enumerate}
+
+\end{document}
+
+

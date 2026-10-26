@@ -22,6 +22,10 @@ __pycache__/
 *err
 *out
 
+# random latex crap
+*synctex.gz
+*log
+
 # figures
 *png
 *pdf

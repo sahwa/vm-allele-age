@@ -230,117 +230,119 @@ if (mode == "grid") {
   lambda_select <- c(0.001, 0.01)
   H2_select     <- c(0.034, 0.02, 0.01)
 
-  for (kk in K_VALS) for (tt in T_VALS) {
-    r  <- reps[lambda %in% lambda_select & H2 %in% H2_select]
-    su <- summ[lambda %in% lambda_select & H2 %in% H2_select]
-    if (!nrow(r)) next
-    sfx <- paste0(tag, "_K", kk, "_t", tt)
-    ttl <- sprintf("N = %s, %d bins, ages 0-%d gen, CV_age = %g",
-                   format(N_INDS, big.mark = ",", scientific = FALSE), kk, tt, CV_AGE)
+  r  <- reps[lambda %in% lambda_select & H2 %in% H2_select]
+  su <- summ[lambda %in% lambda_select & H2 %in% H2_select]
+  if (!nrow(r)) stop("nothing left after the lambda/H2 filter")
 
-    ann_tab <- function(dt, est, truth) {
-      a <- dt[is.finite(get(est)),
-              .(bias = mean(get(est) - get(truth)),
-                rmse = sqrt(mean((get(est) - get(truth))^2)), n = .N),
-              by = .(lambda_f, CV_f, H2_f)]
-      a[, lab := sprintf("bias %s\nRMSE %s",
-                         formatC(bias, format = "g", digits = 2, flag = "+"),
-                         formatC(rmse, format = "g", digits = 2))]
-      a[]
-    }
-    ann_l   <- ann_tab(r, "lambda_hat", "lambda")
-    ann_v   <- ann_tab(r, "h2m_hat",    "h2m_true")
-    tru_lam <- unique(r[, .(lambda_f, lambda, CV_f, H2_f)])
+  sfx <- tag
+  ## K and t_max are no longer parameters -- both come from the age profile, so
+  ## t0 (the count-weighted mean age) is the summary worth printing.
+  ttl <- sprintf("N = %s, %d age bins, t0 = %.1f gen, CV_age = %g",
+                 format(N_INDS, big.mark = ",", scientific = FALSE),
+                 length(PROF$t), PROF$t0, CV_AGE)
 
-    ## (i) estimates of lambda
-    p1 <- ggplot(r[is.finite(lambda_hat)], aes(lambda_f, lambda_hat)) +
-      geom_hline(yintercept = 0, colour = "grey70") +
-      geom_jitter(width = 0.12, size = 1, alpha = 0.25, colour = COL_EST) +
-      geom_boxplot(outlier.shape = NA, fill = NA, width = 0.6, colour = COL_EST) +
-      geom_errorbar(data = tru_lam, aes(x = lambda_f, ymin = lambda, ymax = lambda),
-                    width = 0.9, colour = COL_TRUTH, linewidth = 0.8, inherit.aes = FALSE) +
-      geom_text(data = ann_l, aes(lambda_f, Inf, label = lab), vjust = 1.2,
-                size = 2.6, lineheight = 0.9, inherit.aes = FALSE) +
-      facet_grid(CV_f ~ H2_f) +
-      scale_y_continuous(trans = pseudo_log_trans(sigma = 2e-3),
-                         breaks = c(-0.1, -0.01, -0.001, 0, 0.001, 0.01, 0.03, 0.1)) +
-      labs(x = expression("True " * lambda), y = expression(hat(lambda)),
-           title = paste0("Estimates of ", "λ: ", ttl),
-           subtitle = "Pseudo-log y axis; red bar = truth; points at the extremes are fits at the search bound") + th
-
-    ## (ii) bias in lambda
-    p2 <- ggplot(su, aes(lambda_f, bias)) +
-      geom_hline(yintercept = 0, colour = "grey70") +
-      geom_linerange(aes(ymin = bias - sd_lambda, ymax = bias + sd_lambda),
-                     alpha = 0.3, linewidth = 2.5, colour = COL_EST) +
-      geom_pointrange(aes(ymin = bias - 1.96 * se_bias, ymax = bias + 1.96 * se_bias),
-                      size = 0.35, colour = COL_EST) +
-      facet_grid(CV_f ~ H2_f, scales = "free_y") +
-      labs(x = expression("True " * lambda), y = expression(hat(lambda) - lambda),
-           title = paste0("Bias in λ̂: ", ttl),
-           subtitle = "Dark: 95% CI on the mean. Pale: SD across replicates (what one study faces).") + th
-
-    ## (iii) power. LRT keeps boundary fits, the CI rule drops them; the gap
-    ## between the lines is how much that choice matters.
-    pw <- melt(su, id.vars = c("lambda_f", "CV_f", "H2_f"),
-               measure.vars = c("power", "power_ci"),
-               variable.name = "rule", value.name = "p")
-    pw[, rule := factor(rule, c("power", "power_ci"), c("LRT p < 0.05", "95% CI excludes 0"))]
-    p3 <- ggplot(pw, aes(lambda_f, p, colour = rule, group = rule)) +
-      geom_hline(yintercept = 0.05, colour = "grey60", linetype = "dotted") +
-      geom_hline(yintercept = 0.80, colour = COL_TRUTH, linetype = "dashed") +
-      geom_line(alpha = 0.6) + geom_point(size = 2) +
-      facet_grid(CV_f ~ H2_f) + scale_y_continuous(limits = c(0, 1)) +
-      scale_colour_manual(values = c("LRT p < 0.05" = COL_EST,
-                                     "95% CI excludes 0" = "grey35"), name = NULL) +
-      labs(x = expression("True " * lambda), y = expression("P(detect " * lambda > 0 * ")"),
-           title = paste0("Power to detect λ > 0: ", ttl),
-           subtitle = "At λ = 0 this is the false-positive rate (dotted 0.05); dashed red = 80%") + th
-
-    ## (iv) mutational heritability
-    tru <- unique(r[, .(lambda_f, CV_f, H2_f, h2m_true)])
-    p4 <- ggplot(r[is.finite(h2m_hat)], aes(lambda_f, h2m_hat)) +
-      geom_hline(yintercept = 0, colour = "grey70") +
-      geom_jitter(width = 0.12, size = 1, alpha = 0.25, colour = COL_EST) +
-      geom_boxplot(outlier.shape = NA, fill = NA, width = 0.6, colour = COL_EST) +
-      geom_point(data = tru, aes(lambda_f, h2m_true), colour = COL_TRUTH, size = 2.5,
-                 inherit.aes = FALSE) +
-      geom_text(data = ann_v, aes(lambda_f, Inf, label = lab), vjust = 1.2,
-                size = 2.6, lineheight = 0.9, inherit.aes = FALSE) +
-      facet_grid(CV_f ~ H2_f) +
-      scale_y_continuous(trans = pseudo_log_trans(sigma = 1e-5),
-                         breaks = c(-1e-3, -1e-4, 0, 1e-4, 1e-3, 1e-2),
-                         labels = function(x) format(x, scientific = TRUE)) +
-      coord_cartesian(ylim = c(-3e-3, 3e-2)) +
-      labs(x = expression("True " * lambda), y = expression(hat(V)[M] / V[P]),
-           title = paste0("Mutational heritability: ", ttl),
-           subtitle = "Red = truth; pseudo-log axis, includes zero and negative estimates; view clipped") + th
-
-    ## (v) V_M bias: age-0 target vs centroid target, each against ITS OWN truth.
-    ## sigma2_m = sigma2_t0 * (1 + lambda*t0), so error in lambda_hat is amplified
-    ## by the extrapolation distance; the centroid value is not.
-    rb <- melt(su, id.vars = c("lambda_f", "CV_f", "H2_f"),
-               measure.vars = c("h2m_med_ratio", "h2m_t0_med_ratio"),
-               variable.name = "target", value.name = "ratio")
-    rb[, target := factor(target, c("h2m_med_ratio", "h2m_t0_med_ratio"),
-                          c("extrapolated to age 0", "at centroid age t0"))]
-    p5 <- ggplot(rb, aes(lambda_f, ratio, colour = target, group = target)) +
-      geom_hline(yintercept = 1, colour = COL_TRUTH, linetype = "dashed") +
-      geom_line(alpha = 0.6) + geom_point(size = 2, position = dg2) +
-      facet_grid(CV_f ~ H2_f) + scale_y_log10() +
-      scale_colour_manual(values = c("extrapolated to age 0" = COL_EST,
-                                     "at centroid age t0" = "grey35"), name = NULL) +
-      labs(x = expression("True " * lambda), y = "estimate / truth (median ratio)",
-           title = paste0("Bias in mutational heritability: ", ttl),
-           subtitle = "Each series against its own truth. Dashed red = unbiased. The centroid value needs no back-extrapolation.") + th
-
-    W <- 14; Hh <- 7.5
-    ggsave(file.path(OUTDIR, paste0("lambda_estimates_", sfx, ".png")), p1, width = W, height = Hh, dpi = 150)
-    ggsave(file.path(OUTDIR, paste0("lambda_bias_",      sfx, ".png")), p2, width = W, height = Hh, dpi = 150)
-    ggsave(file.path(OUTDIR, paste0("lambda_power_",     sfx, ".png")), p3, width = W, height = Hh, dpi = 150)
-    ggsave(file.path(OUTDIR, paste0("h2m_",              sfx, ".png")), p4, width = W, height = Hh, dpi = 150)
-    ggsave(file.path(OUTDIR, paste0("h2m_bias_",         sfx, ".png")), p5, width = W, height = Hh, dpi = 150)
+  ann_tab <- function(dt, est, truth) {
+    a <- dt[is.finite(get(est)),
+            .(bias = mean(get(est) - get(truth)),
+              rmse = sqrt(mean((get(est) - get(truth))^2)), n = .N),
+            by = .(lambda_f, CV_f, H2_f)]
+    a[, lab := sprintf("bias %s\nRMSE %s",
+                       formatC(bias, format = "g", digits = 2, flag = "+"),
+                       formatC(rmse, format = "g", digits = 2))]
+    a[]
   }
+  ann_l   <- ann_tab(r, "lambda_hat", "lambda")
+  ann_v   <- ann_tab(r, "h2m_hat",    "h2m_true")
+  tru_lam <- unique(r[, .(lambda_f, lambda, CV_f, H2_f)])
+
+  ## (i) estimates of lambda
+  p1 <- ggplot(r[is.finite(lambda_hat)], aes(lambda_f, lambda_hat)) +
+    geom_hline(yintercept = 0, colour = "grey70") +
+    geom_jitter(width = 0.12, size = 1, alpha = 0.25, colour = COL_EST) +
+    geom_boxplot(outlier.shape = NA, fill = NA, width = 0.6, colour = COL_EST) +
+    geom_errorbar(data = tru_lam, aes(x = lambda_f, ymin = lambda, ymax = lambda),
+                  width = 0.9, colour = COL_TRUTH, linewidth = 0.8, inherit.aes = FALSE) +
+    geom_text(data = ann_l, aes(lambda_f, Inf, label = lab), vjust = 1.2,
+              size = 2.6, lineheight = 0.9, inherit.aes = FALSE) +
+    facet_grid(CV_f ~ H2_f) +
+    scale_y_continuous(trans = pseudo_log_trans(sigma = 2e-3),
+                       breaks = c(-0.1, -0.01, -0.001, 0, 0.001, 0.01, 0.03, 0.1)) +
+    labs(x = expression("True " * lambda), y = expression(hat(lambda)),
+         title = paste0("Estimates of \u03bb: ", ttl),
+         subtitle = "Pseudo-log y axis; red bar = truth; points at the extremes are fits at the search bound") + th
+
+  ## (ii) bias in lambda
+  p2 <- ggplot(su, aes(lambda_f, bias)) +
+    geom_hline(yintercept = 0, colour = "grey70") +
+    geom_linerange(aes(ymin = bias - sd_lambda, ymax = bias + sd_lambda),
+                   alpha = 0.3, linewidth = 2.5, colour = COL_EST) +
+    geom_pointrange(aes(ymin = bias - 1.96 * se_bias, ymax = bias + 1.96 * se_bias),
+                    size = 0.35, colour = COL_EST) +
+    facet_grid(CV_f ~ H2_f, scales = "free_y") +
+    labs(x = expression("True " * lambda), y = expression(hat(lambda) - lambda),
+         title = paste0("Bias in \u03bb\u0302: ", ttl),
+         subtitle = "Dark: 95% CI on the mean. Pale: SD across replicates (what one study faces).") + th
+
+  ## (iii) power. LRT keeps boundary fits, the CI rule drops them; the gap
+  ## between the lines is how much that choice matters.
+  pw <- melt(su, id.vars = c("lambda_f", "CV_f", "H2_f"),
+             measure.vars = c("power", "power_ci"),
+             variable.name = "rule", value.name = "p")
+  pw[, rule := factor(rule, c("power", "power_ci"), c("LRT p < 0.05", "95% CI excludes 0"))]
+  p3 <- ggplot(pw, aes(lambda_f, p, colour = rule, group = rule)) +
+    geom_hline(yintercept = 0.05, colour = "grey60", linetype = "dotted") +
+    geom_hline(yintercept = 0.80, colour = COL_TRUTH, linetype = "dashed") +
+    geom_line(alpha = 0.6) + geom_point(size = 2) +
+    facet_grid(CV_f ~ H2_f) + scale_y_continuous(limits = c(0, 1)) +
+    scale_colour_manual(values = c("LRT p < 0.05" = COL_EST,
+                                   "95% CI excludes 0" = "grey35"), name = NULL) +
+    labs(x = expression("True " * lambda), y = expression("P(detect " * lambda > 0 * ")"),
+         title = paste0("Power to detect \u03bb > 0: ", ttl),
+         subtitle = "At \u03bb = 0 this is the false-positive rate (dotted 0.05); dashed red = 80%") + th
+
+  ## (iv) mutational heritability
+  tru <- unique(r[, .(lambda_f, CV_f, H2_f, h2m_true)])
+  p4 <- ggplot(r[is.finite(h2m_hat)], aes(lambda_f, h2m_hat)) +
+    geom_hline(yintercept = 0, colour = "grey70") +
+    geom_jitter(width = 0.12, size = 1, alpha = 0.25, colour = COL_EST) +
+    geom_boxplot(outlier.shape = NA, fill = NA, width = 0.6, colour = COL_EST) +
+    geom_point(data = tru, aes(lambda_f, h2m_true), colour = COL_TRUTH, size = 2.5,
+               inherit.aes = FALSE) +
+    geom_text(data = ann_v, aes(lambda_f, Inf, label = lab), vjust = 1.2,
+              size = 2.6, lineheight = 0.9, inherit.aes = FALSE) +
+    facet_grid(CV_f ~ H2_f) +
+    scale_y_continuous(trans = pseudo_log_trans(sigma = 1e-5),
+                       breaks = c(-1e-3, -1e-4, 0, 1e-4, 1e-3, 1e-2),
+                       labels = function(x) format(x, scientific = TRUE)) +
+    coord_cartesian(ylim = c(-3e-3, 3e-2)) +
+    labs(x = expression("True " * lambda), y = expression(hat(V)[M] / V[P]),
+         title = paste0("Mutational heritability: ", ttl),
+         subtitle = "Red = truth; pseudo-log axis, includes zero and negative estimates; view clipped") + th
+
+  ## (v) V_M bias: age-0 target vs centroid target, each against ITS OWN truth.
+  ## sigma2_m = sigma2_t0 * (1 + lambda*t0), so error in lambda_hat is amplified
+  ## by the extrapolation distance; the centroid value is not.
+  rb <- melt(su, id.vars = c("lambda_f", "CV_f", "H2_f"),
+             measure.vars = c("h2m_med_ratio", "h2m_t0_med_ratio"),
+             variable.name = "target", value.name = "ratio")
+  rb[, target := factor(target, c("h2m_med_ratio", "h2m_t0_med_ratio"),
+                        c("extrapolated to age 0", "at centroid age t0"))]
+  p5 <- ggplot(rb, aes(lambda_f, ratio, colour = target, group = target)) +
+    geom_hline(yintercept = 1, colour = COL_TRUTH, linetype = "dashed") +
+    geom_line(alpha = 0.6) + geom_point(size = 2, position = dg2) +
+    facet_grid(CV_f ~ H2_f) + scale_y_log10() +
+    scale_colour_manual(values = c("extrapolated to age 0" = COL_EST,
+                                   "at centroid age t0" = "grey35"), name = NULL) +
+    labs(x = expression("True " * lambda), y = "estimate / truth (median ratio)",
+         title = paste0("Bias in mutational heritability: ", ttl),
+         subtitle = "Each series against its own truth. Dashed red = unbiased. The centroid value needs no back-extrapolation.") + th
+
+  W <- 14; Hh <- 7.5
+  ggsave(file.path(OUTDIR, paste0("lambda_estimates_", sfx, ".png")), p1, width = W, height = Hh, dpi = 150)
+  ggsave(file.path(OUTDIR, paste0("lambda_bias_",      sfx, ".png")), p2, width = W, height = Hh, dpi = 150)
+  ggsave(file.path(OUTDIR, paste0("lambda_power_",     sfx, ".png")), p3, width = W, height = Hh, dpi = 150)
+  ggsave(file.path(OUTDIR, paste0("h2m_",              sfx, ".png")), p4, width = W, height = Hh, dpi = 150)
+  ggsave(file.path(OUTDIR, paste0("h2m_bias_",         sfx, ".png")), p5, width = W, height = Hh, dpi = 150)
 
   ## ---- headline numbers ----------------------------------------------------
   cat("\n-- false-positive rate at lambda = 0 (should be ~0.05) --\n")
