@@ -3,8 +3,8 @@
 \usepackage{amssymb}
 \usepackage{amsfonts}
 \usepackage[parfill]{parskip}
-\title{Joint estimation of $\sigma_{m}^{2}$, $\lambda$ and $\sigma_{e}^{2}$ from singleton count data}
-\author{Sam Morris}
+\title{Joint estimation of $\sigma_{m}^{2}$, $\lambda$ and $\sigma_{e}^{2}$ from population-level data}
+\author{Sam Morris, Loic Yengo, Peter Visscher}
 \date{October 2026}
 
 \begin{document}
@@ -98,12 +98,70 @@ where $x_i$ is the total number of singletons carried by individual $i$. The bin
 
 We would like to know, for a given $\lambda > 0$ and $\alpha$ significance level, what is the chance our model returns a significant result. Power = $\Phi\frac{(\lambda_{true}}{SE} - z_{a}$. Therefore, we need to estimate SE($\hat{\lambda}$).
 
-If $\lambda > 0$ then we expect an individual who carries more older singletons to have smaller $E[y_{i}]$.
+\subsection{Step 1}
+
+As before, we denote a vector of standardised phenotypes as $y_{i} \sim \mathcal{N}(0, v_{i})$, where $v_{i} = \sigma^2_m \sum_{k} C_{ik} f(\lambda, t_{k}) + \sigma^2_e$. When we write it this way, $\lambda$ appears inside a sum with one term per age bin, which makes it challenging to see how the precision of $\hat{\lambda}$ depends on the design. Therefore, we would like to linearise the equation. So, for the purposes of estimating power, we will use two approximations to derive an approximation for the $SE(\lambda)$
+
+First, we replace each participants distribution of singleton ages by a single summary statistic - their mean singleton age: $$\bar t_i = \frac{1}{T_i}\sum_k C_{ik} t_k, \qquad T_i = \sum_k C_{ik}$$, so that $\sum_k C_{ik} f(\lambda, t_k) \approx T_i\, f(\lambda, \bar t_i)$.
+
+Second, we approximate $1/(1+\lambda t) \approx 1-\lambda t$
+
+Both approximations are given by the produce of $\lambda \bar t$, which is 0.017 at the plausible value $\lambda = 10^{-3}$ and the observed mean singleton age of 17.4 generations.
+
+If we substitute our approximations, the variance for individual $i$ becomes:
+
+\begin{equation}
+    v_{i} \approx \sigma_e^2 + \sigma_m^2 T_{i} - \lambda \sigma_m^2 (T_{i} \bar{t_i})
+\end{equation}
+
+Therefore, the variance is now a simple weighted sum of two quantites with known measurements for each participant: how many singletons they carry $T_i$ and that count multiplied by their mean singleton age $T_{i} \bar(t_i)$.
+
+\subsection{Step 2}
+
+The previous step showed that estimating our model is approximately equivalent to regression $y^2_i$ on two variables measured for each participant. To know the precision of that estimate, we need the variance in its outcome $y^2_i$. Since $y_{i} \sim \mathcal{N}(0, v_{i})$, writing $z_i = \frac{y_i}{\sqrt{v_i}}$ gives a standard normal variable and rearranging gives $y_i^2 = v_i z_i^2$. The square of a standard normal has variance 2, so:
+
+$$\mathrm{Var}(y_i^2) = 2 v_i^2$$
+
+It is worth noting that the standard deviation of $y_{i}^2$ is $\sqrt{2}$ times it's own mean - so a single participants squared trait value is am extremely imprecise estimate of their trait variance under this model. The uncertainty is larger than the quantity being estimated.
+
+\subsection{Step 3}
+
+In a multiple regression setting, the precision of a coefficient relies on the variation that predictor explains after account for all other variables in the model. Our two variables are singleton count $T_{i}$ and the product of $T_{i} \hat{t_i}$. These are strongly correlated.
+
+We can write each persons singleton age as a cohort-wide average plus an individual deviation from that average, $\bar t_i = t_0 + \delta_i$, where $t_0$ is the average across participants and $\delta_i$ has mean zero. We can multiply through by $T_{i}$ to obtain $$T_i \bar t_i \;=\; \underbrace{t_0 T_i}_{\text{a multiple of } T_i} \;+\; T_i \delta_i$$.
+
+The first term is just $T_{i}$ multiplied by a constant and so doesn't contribute to $\lambda$. Only the second term $T_{i} \delta_i$ is informative. This has a straightforward interpretation. If every participant’s singletons were on average the same age, then selection would have reduced every participant’s singleton contribution by the same proportion. That is indistinguishable from mutations simply having smaller effects when they arise — a smaller $\sigma^2_m$. No amount of data could separate the two explanations. The strength of selection is identified only by participants differing from one another in the typical age of the singletons they carry.
+
+Treating $T_i$ and $\delta_i$ as independent, the informative variation in the second variable is
+
+$$\mathrm{sd}(T_i \bar t_i \mid T_i) \;\approx\; \bar T \times \mathrm{sd}(\bar t_i)$$
+
+where $\bar T$ is the average singleton count and $\mathrm{sd}(\bar t_i)$ is the standard deviation across participants of their mean singleton age, in generations.
+
+\subsection{Step 4}
+
+Using the formula for the standard erroer of an ordinary regression coefficient, we can susbitute in the residual variance from Step 2 and the informative variation from Step 3:
+
+$$\mathrm{SE}(\hat\beta) \;=\; \sqrt{\frac{2v^2}{N \,\bar T^2\, \mathrm{sd}(\bar t_i)^2}} \;=\; \frac{v\sqrt{2/N}}{\bar T \cdot \mathrm{sd}(\bar t_i)}$$
+
+Since $\beta = -\lambda\sigma^2_m$, $$\mathrm{SE}(\hat\lambda) \;=\; \sqrt{\frac{2}{N}} \cdot \frac{v}{\sigma^2_m \bar T} \cdot \frac{1}{\mathrm{sd}(\bar t_i)}$$
+
+The middle factor has a direct interpretation. The proportion of trait variance attributable to singletons is
+
+$$h^2_{\text{sing}} = \frac{\sigma^2_m \bar T \bar f}{v} \;\approx\; \frac{\sigma^2_m \bar T}{v}$$
+
+where $\bar f$ is the average value of $f(\lambda, t)$ across the observed ages, close to 1 when singletons are young. The middle factor is therefore $1/h^2_{\text{sing}}$, giving
+
+$$\boxed{\;\mathrm{SE}(\hat\lambda) \;\approx\; \frac{\sqrt{2/N}}{h^2_{\text{sing}} \cdot \mathrm{sd}(\bar t_i)}\;}$$
+
+Expressing the spread in mean singleton age relative to its own average, $\mathrm{sd}(\bar t_i) = t_0 \times \mathrm{CV_{age}}$, recovers the form used in the main text. We note that these two factors are not independent quantities: their product is simply the absolute spread in mean singleton age across participants, in generations, and only that product has meaning.
+
+The expression identifies three ways to improve precision: increase the cohort size $N$, increase the proportion of trait variance carried by singletons, or increase the spread across participants in the age of the singletons they carry. Only $N$ enters as a square root; the other two enter directly, so a twofold gain in either is worth a fourfold increase in sample size.
 
 
 \subsection{Batching}
 
-We now consider a model where, to improve power, we split individuals into $B$ equally sized batches. Singletons would be ascertained within batches, but their dates inferred from the entire cohort. I propose this will improve power for several reasons, listed below.
+Now we have the formula for the precision of $\lambda$, we now consider a model where, to improve power, we split individuals into $B$ equally sized batches. Singletons would be ascertained within batches, but their dates inferred from the entire cohort. I propose this will improve power for several reasons, listed below.
 
 \subsubsection{Increasing $h^2_{sing}$}
 
