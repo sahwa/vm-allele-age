@@ -95,6 +95,13 @@ power_lambda <- function(lambda, se, z_a = Z_ALPHA) {
   ifelse(is.na(se), NA_real_, pnorm((lambda / se) - z_a))
 }
 
+decay <- function(lambda, t, curve = "hyerpbolic") {
+  switch(curve,
+    exponential = exp(-lambda * t),
+    hyperbolic  = 1 / (1 + lambda * t),
+    stop("curve must be 'exponential' or 'hyperbolic'"))
+}
+
 ## ---------------------------------------------------------------------------
 ## sweep
 ## ---------------------------------------------------------------------------
@@ -104,8 +111,8 @@ res <- rbindlist(map(N_BATCHES, function(nb) {
     npyLoad(file.path(DATA, glue("trep_nb{nb}.npy"))),
     npyLoad(file.path(DATA, glue("kdist_nb{nb}.npy")))
     )
-
   rbindlist(map(LAMBDA_VALS, function(lam) {
+
     r <- fisher_se_lambda_trait(prep, vm_vp = VM_VP, lambda = lam)
     data.table(
       n_batches  = nb,
