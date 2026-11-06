@@ -13,7 +13,7 @@
 library(data.table); library(ggplot2); library(patchwork)
 
 IN  <- "/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/data/tsdate/date_accuracy/bias_by_age_and_mac.csv"
-OUT <- "tsdate_shrinkage.png"
+OUT <- "/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/figs/tests/tsdate/tsdate_shrinkage.png"
 MIN_N <- 1000                      # drop cells too thin to read
 
 ## -- palette (dataviz reference instance) ------------------------------------
@@ -143,13 +143,15 @@ pC <- ggplot(dens, aes(age, d, colour = src, fill = src)) +
         legend.background = element_blank())
 
 ## -- assemble ----------------------------------------------------------------
-fig <- (pA | pB | pC) + plot_annotation(
+fig <- (pA / pB / pC) + plot_annotation(
   subtitle = paste("msprime n=500,000, L=1e8, 40.5M variants. True topology, so this is a",
-                   "lower bound on error — tsinfer adds topology error on top."),
+                   "lower bound on error — tsinfer adds topology error on top.", ncol = 1),
   theme = theme(plot.background = element_rect(fill = SURFACE, colour = NA),
                 plot.title = element_text(size = 15, face = "bold", colour = INK),
                 plot.subtitle = element_text(size = 10, colour = INK2,
                                              margin = margin(b = 10))))
 
-ggsave(OUT, fig, width = 15.5, height = 5.3, dpi = 200, bg = SURFACE)
+ggsave(OUT, fig,   width = 7.2,
+  height = 9,
+  units = "in", dpi = 200, bg = SURFACE)
 cat("written:", OUT, "\n")
