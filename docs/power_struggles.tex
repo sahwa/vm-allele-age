@@ -9,49 +9,50 @@
 \title{update}
 \author{sam }
 \date{October 2026}
-\usepackage{amsmath}
 \begin{document}
 
 \maketitle
 
 \section{Recap}
 
-We discussed last week that we can accurately estimate $V_M$.
+Last week we discussed last week that we can accurately estimate $V_M$ accurately and with very low bias (Fig.\ref{fig:h2m_est_realistic}).
+\begin{figure}[H]
+\centering
+    \includegraphics[totalheight=8cm]{"/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/figs/v3.4/h2m_N500000.png"}
+        \caption{Estimating $h^2_m$ using simulations based on 500,000 individuals varying the $h^2_{sing}$ and true $\lambda$ for 100 replicates of each set of parameters. Red line is true $\lambda$ and blue bar is mean estimate. Note the log scale may be making this look a little bit more accurate that it really is.}
+    \label{fig:h2m_est_realistic}
+\end{figure}
 
-Estimating $\lambda$ seems to be possible under some ideal scenarios, but when we introduce more realistic elements to the data, then it becomes more challenging. Specifically, when we simulate allele ages under a realistic age distribution, obtained from msprime simulations, then estimates tend to be unstable, noisy and biased (Fig \ref{fig:labda_est_realistic}).
 
 
-\begin{figure}
+Estimating $\lambda$ seems to be possible under some ideal scenarios But when we introduce more realistic elements to the data, then it becomes more challenging. Specifically, when we simulate allele ages under a realistic age distribution, obtained from msprime simulations, then estimates tend to be noisy and sometimes biased (\textbf{Fig \ref{fig:labda_est_realistic}}).
+
+\begin{figure}[H]
+\centering
     \includegraphics[totalheight=8cm]{"/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/figs/v3.4/lambda_estimates_N500000.png"}
-        \caption{Estimating $\lambda$ using simulations based on 500,000 individuals varying the $h^2_sing$ and true $\lambda$ for 100 replicates of each set of parameters. Red line is true $\lambda$ and blue bar is mean estimate.}
+        \caption{Estimating $\lambda$ using simulations based on 500,000 individuals varying the $h^2_{sing}$ and true $\lambda$ for 100 replicates of each set of parameters. Red line is true $\lambda$ and blue bar is mean estimate.}
     \label{fig:labda_est_realistic}
 \end{figure}
 
 \section{Theoretical power calculations}
 
-I thought that since we now have a reasonably clear picture using empirical simulations, it would be useful to use some analytic power calculation to understand what are the exact inputs that influence the power to estimate $\lambda$ are.  I derived an approximate power formula for $\lambda$. I had to make a few assumptions, but I think it's a good approximation.
+I thought that since we now have a reasonably clear picture of what it is possible to estimate using empirical simulations, it would be useful to use some analytic power calculation to understand what the exact inputs that influence the power to estimate $\lambda$ are. I derived an approximate power formula for $\lambda$. I had to make a few assumptions, but I think it's a good approximation.
 
-$$\;\mathrm{SE}(\hat\lambda) \;\approx\; \frac{\sqrt{2/N}}{h^2_{\text{sing}} \cdot \mathrm{sd}(\bar t_i)}\;$$
+$$\;\mathrm{SE}(\hat\lambda) \;\approx\; \frac{\sqrt{2/N}}{h^2_{sing} \cdot \mathrm{sd}(\bar t_i)}\;$$
 
-Where $N$ is the number of individuals, $h^2_{sing}$ is the heritability explained by singletons and $\bar{t}_i$ is the mean singleton age in generations.
+Where $N$ is the number of individuals, $h^2_{sing}$ is the heritability explained by singletons, and $\mathrm{sd}(\bar t_i)$ is the standard deviation \emph{across individuals} of their mean singleton age in generations.
 
-and then estimate power using:
+Power is then estimated using
 
 \begin{equation}
-    Power \approx \Phi\frac{\lambda}{SE} - 1.96
+    \mathrm{Power}(\lambda) \approx \Phi\!\left(\frac{\lambda}{\mathrm{SE}} - 1.96\right)
 \end{equation}
-
 
 There's a `better' version which uses the Fisher Information Matrix for all of the other parameters in the joint model that gives quite similar results. I've written up the derivation of this in another document and can share it if you're interested.
 
-% ---------------------------------------------------------------------------
-% Replacement text for the power-surface paragraphs + Figure 2.
-% Matches the style of update.tex (parskip, inline $...$, escaped percents).
-% ---------------------------------------------------------------------------
+I created an analytic power surface over a grid of $h^2_{sing}$ (0.01--1) and $t_0$ at fixed $N = 500{,}000$ (\textbf{Figure \ref{fig:powersurface}A}). For reference, a plausible UKB scenario is $h^2_{sing} \approx 0.034$ and $t_0 \approx 17$.
 
-I created an analytic power surface over a grid of $h^2_{sing}$ (0.01--1) and $t_0$ at fixed $N = 500{,}000$ (Figure \ref{fig:powersurface}A). For reference, a plausible $h^2_{sing} \approx 0.05$ and $t_0 \approx 20$.
-
-Reaching the 80\% power threshold requires $h^2_{sing} \gtrsim 0.1$, and then only if $t_0$ is very large $(>>1000)$, which is several orders of magnitude more than observed in the simulated data. At $t_0 = 17$ there are no values of $h^2_{sing}$ which allow us to reach 80\% power. This would require $h^2_{sing} = 1.45$, which is obviously impossible! . Under the plausible UKB scenario, $h^2_{sing} = 0.034$ and $t_0 = 17$, power to detect $\lambda = 10^{-3}$ at $\alpha = 0.05$ is 0.03. T
+Reaching the 80\% power to detect $\lambda$ requires $h^2_{sing} \gtrsim 0.1$, and then only if $t_0$ is very large ($\gg 1000$), which is several orders of magnitude more than observed in the simulated data. At $t_0 = 17$ there are no values of $h^2_{sing}$ which allow us to reach 80\% power: this would require $h^2_{sing} = 1.45$, which is obviously impossible. Under the plausible UKB scenario, power to detect $\lambda = 10^{-3}$ at $\alpha = 0.05$ is 0.03.
 
 \begin{center}
 \begin{tabular}{rr}
@@ -64,29 +65,25 @@ $t_0$ (generations) & $h^2_{sing}$ needed for 80\% power \\
 \end{tabular}
 \end{center}
 
-Figure \ref{fig:powersurface}B varies one parameter at a time. Holding $t_0 = 17$ and raising $h^2_{sing}$ all the way to the maximum theoretical value of 1, power reaches 48\%. Holding $h^2_{sing} = 0.034$ and raising $t_0$ instead gives an analytic maximum of only 18\%, near $t \approx 1/\lambda$. Beyond this power declines again: this may be because once variants are old enough that everything has decayed there is nothing left to measure.
+Figure \ref{fig:powersurface}B varies one parameter at a time. Holding $t_0 = 17$ and raising $h^2_{sing}$ all the way to the maximum theoretical value of 1, power reaches 48\%. Holding $h^2_{sing} = 0.034$ and raising $t_0$ instead gives an analytic maximum of only 18\%, near $t \approx 1/\lambda$. Beyond this power declines again, because the information weight $t\,f(\lambda,t)^2$ itself peaks there: once variants are old enough that everything has decayed, there is nothing left to measure.
 
-That analytic bound is not attained at realistic singleton heritability. Fitting the model by maximum likelihood to simulated phenotypes, power remains at 0.03 for every $t_0$ from 17 to 1500 generations when $h^2_{sing} = 0.034$, with the empirical standard error exceeding the Fisher bound by one to two orders of magnitude (Figure \ref{fig:powersurface}C). The likelihood for $\lambda$ is simply too flat for the asymptotic approximation to hold -- with so little information per person, half a million individuals is still the small-sample regime. Above $h^2_{sing} \approx 0.2$ the bound is attained to within 15\%, so the batching calculations below, which operate at $h^2_{sing} = 0.28$--0.41, are unaffected.
 
-Therefore, singleton heritability, seems to be the limiting contraint, but neither parameter is sufficient on its own. Therefore, the batching strategy which we discussed in the meeting is quite attractive because it can raise both $h^2_{sing}$ and $t_0$ at the same time.
+Therefore, singleton heritability seems to be the limiting constraint, but neither parameter is sufficient on its own. The batching strategy which we discussed in the meeting is therefore quite attractive, because it can raise both $h^2_{sing}$ and $t_0$ at the same time.
 
-\begin{figure}
+\begin{figure}[H]
 \centering
-        \includegraphics[totalheight=7cm]{"/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/figs/tests/power_surface/t0_vs_h2.png"}
-    \caption{Power to detect $\lambda = 10^{-3}$ at $N = 500{,}000$, $\alpha = 0.05$. A) Analytic power surface over mean singleton age $t_0$ and singleton heritability $h^2_{sing}$, computed from the Fisher information for $(\sigma^2_m, \sigma^2_e, \lambda)$ evaluated on simulated count matrices. The red line is the 80\% contour; the dashed line marks the $h^2_{sing} \leq 1$ ceiling; the orange point is the UKB scenario. Open circles and crosses mark the cells checked by simulation, and whether the Cram\'er--Rao bound was attained there. B) Moving one lever at a time, as fold change from the UKB value. Lines are the analytic bound, markers the simulated power. Raising $h^2_{sing}$ to 1 reaches 0.48; raising $t_0$ leaves simulated power at 0.03 throughout, and even the analytic bound turns over near $t \approx 1/\lambda$. C) Empirical standard error from 80 maximum-likelihood replicates against the Fisher-information standard error. The bound holds at $h^2_{sing} \geq 0.1$ but is 6--100$\times$ optimistic at $h^2_{sing} = 0.034$, so the contours in A should be read as an upper bound in that region.}
+        \includegraphics[totalheight=15cm]{"/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/figs/tests/power_surface/t0_vs_h2_stacked.png"}
+    \caption{Power to detect $\lambda = 10^{-3}$ at $N = 500{,}000$, $\alpha = 0.05$. A) Analytic power surface over mean singleton age $t_0$ and singleton heritability $h^2_{sing}$, computed from the Fisher information for $(\sigma^2_m, \sigma^2_e, \lambda)$ evaluated on simulated count matrices. The red line is the 80\% contour; the dashed line marks the $h^2_{sing} \leq 1$ ceiling; the orange point is the UKB scenario. Open circles and crosses mark the cells checked by simulation, and whether the Cram\'er--Rao bound was attained there. B) Moving one lever at a time, as fold change from the UKB value. Lines are the analytic bound, markers the simulated power. Raising $h^2_{sing}$ to 1 reaches 0.48; raising $t_0$ leaves simulated power at 0.03 throughout, and even the analytic bound turns over near $t \approx 1/\lambda$.}
     \label{fig:powersurface}
 \end{figure}
 
 \section{Splitting the data into batches}
 
-
-As we discussed last week, batching involved splitting the data into $B$ batches, ascertaining singletons in the batch, and then dating them in the whole cohort, jointly analysing all individuals and applying a penalty correection for the fact that singletons would be shared across batches. This would in theory have the advantage of raising $h^2_{sing}$, $t_0$ and making dating these `singletons' easier since they would have a higher MAC in the whole cohort.
+As we discussed last week, batching involves splitting the data into $B$ batches, ascertaining singletons within each batch, and then dating them in the whole cohort, jointly analysing all individuals and applying a penalty correction for the fact that singletons would be shared across batches. This would in theory have the advantage of raising $h^2_{sing}$ and $t_0$, and making dating these `singletons' easier since they would have a higher MAC in the whole cohort. It would also mean we would likely get more accurate dates for the singletons.
 
 Figure \ref{fig:verticalcell} shows the impact of batching on both $h^2_{sing}$ and $t_0$ using singleton counts taken from UKB-like simulations. Most of the important information is in the figure legend.
 
-
-
-\begin{figure}
+\begin{figure}[H]
 \centering
         \includegraphics[totalheight=8cm]{"/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/figs/tests/batch_power_sweep/batch_sweep.png"}
 \caption{A) Fold change in $t_0$ (mean singleton age) and $h^2_{sing}$
@@ -96,81 +93,45 @@ scale sub-linearly and with almost the same exponent ($\sim n^{0.45}$). The dash
 detect $\lambda$ at $\alpha = 0.05$ (two-sided) across batch sizes and values of $\lambda$. Grey cells are not realisable: given $\lambda = c(V_M/V_P)/h^2$, those combinations of $\lambda$ and $V_M/V_P = 2.6\times10^{-3}$ imply a trait heritability above 1. Panel B does not account for variant sharing across batches -- a variant can be a
 singleton in many batches at once, carried by different people, so as the number of batches grows the same variant is counted repeatedly while the
 model treats those individuals as independent. C) The same standard errors with a $\sqrt{k}$ sharing penalty applied. Below a batch size of about
-100,000 the penalty cancels the gains from increasing $t_0$ and  $h^2_{sing}$: the penalised standard error plateaus near
-$2.8\times10^{-3}$, giving power of roughly 5\% at $\lambda = 10^{-3}$  however small the batches become. Two caveats make these figures optimistic.
-The Fisher bound is attained only above $h^2_{sing} \approx 0.2$, so the  larger batch sizes in B and C are upper bounds rather than achievable
-power. More importantly, these are powers to reject $\lambda = 0$ under the model as fitted; they do not account for the frequency-ascertainment bias
-described below, which makes $\hat\lambda$ inconsistent under batching.}    \label{fig:verticalcell}
+100,000 the penalty cancels the gains from increasing $t_0$ and $h^2_{sing}$: the penalised standard error plateaus near
+$2.8\times10^{-3}$, giving power of roughly 5\% at $\lambda = 10^{-3}$ however small the batches become. Note that these are powers to reject $\lambda = 0$ under the model as fitted.}
+    \label{fig:verticalcell}
 \end{figure}
 
+After some thought, your suspicion was quite well founded and the batching strategy isn't really a free lunch like I thought it might be! There are two main reasons for this.
 
-After some thought, your suspicion was quite well founded and the batching strategy isn't really a free lunch like I thought it might be!
+Fig \ref{fig:verticalcell}B shows the power to detect $\lambda$ at different batch sizes. The maximum power we obtained to estimate $\lambda$ was 0.74 when batch size is 2,500 -- i.e. splitting the 500,000 individuals into 200 equal batches. At $\lambda = 10^{-3}$ this is the only batch size that reaches power above 0.5. However, this doesn't account for the fact that singletons can be shared across batches -- i.e. the fact that we are double counting variants. This double counting gets worse as we increase the number of batches.
 
-Our model says $\mathbb{E}[\beta^2 \mid t] = \sigma_m^2 \cdot f(\lambda, t)$ - the expected squared effect of a surviving variant depends on its age, the strength of stabilising selection and nothing else. We have not included allele frequency in this model everywhere,
+Fig \ref{fig:verticalcell}C shows $\mathrm{SE}(\hat{\lambda})$ as a function of batch size whilst accounting for the sharing across batches, by applying a $\sqrt{k}$ penalty (orange line) compared to not accounting for it (blue line). As you can see, the orange line plateaus once you reach around a batch size of 100,000. Therefore, reading off Figure \ref{fig:verticalcell}B we take batch size 100,000 as the approximate upper limit beyond which batching stops being beneficial -- the maximum power we could obtain there is 0.11, and that is under a rather optimistic $\lambda = 10^{-2}$. As such, batching doesn't appear to solve the power issue once sharing is accounted for.
 
-If we split into batches, we end up selecting variants on allele frequency - i.e. if we split into $B = 30{,}000$ this picks out variants near AC 17; $B = 2{,}500$ picks out AC 200. So we are conditioning on a variable that isn't directly in the model.
-
-\subsection{Why conditioning on frequency is worse than it sounds}
-
-I checked this directly in the SLiM output by regressing $\log \beta^2$ on $\log(\mathrm{AC})$ within age bins. If the relationship were the same at every age it wouldn't matter much: a constant multiplier would be absorbed into $\hat\sigma_m^2$, so $V_M$ would come out biased by a known factor and $\lambda$ would be untouched. But the slope grows steeply with age:
-
-\begin{center}
-\begin{tabular}{lr}
-true age (gen) & slope of $\log\beta^2$ on $\log\mathrm{AC}$ \\
-\hline
-0--1     & $+0.02$ \\
-8--15    & $-0.04$ \\
-32--63   & $-0.11$ \\
-128--255 & $-0.20$ \\
-256--511 & $-0.24$ \\
-\end{tabular}
-\end{center}
-
-This makes sense biologically. A brand new variant's frequency is pure chance - selection has had no time to sort anything, so frequency tells you nothing about effect size. An old variant that is still rare must have been held down, so by then frequency is highly informative. The frequency--effect relationship \emph{builds up over time}, and viewed through a fixed-frequency window that build-up is indistinguishable from effect sizes decaying over time.
-
-The practical consequence is that a fixed AC means something different at each age. Among 10-generation-old variants the geometric mean AC is about 1.5, so AC 17 is unusually common (small effect); among 180-generation-old variants the geometric mean AC is about 32, so AC 17 is unusually rare (large effect). Ascertaining at fixed frequency therefore samples the small-effect end of young variants and the large-effect end of old ones, which makes $\beta^2$ appear to \emph{rise} with age. For $B = 50{,}000$ this is enough to turn a true $\lambda = 10^{-3}$ into $\hat\lambda \approx -1.6 \times 10^{-4}$, and for $B = 100{,}000$ into $\hat\lambda \approx -1.3 \times 10^{-3}$. It is not a small correction on top of the signal; it is larger than the signal and of the opposite sign.
-
-Note that this does not go away if we fix AC exactly - the problem is the relationship changing with age, not spread in AC. It also cannot be dodged by batching less aggressively, because batching exists precisely to reach older variants, and old is where the frequency dependence lives.
-
-The same effect is present in the plain singleton design, but it is much weaker there, for a reason worth stating: a brand new mutation has exactly one copy by definition, so ``ascertain the singletons'' among the youngest variants is not ascertainment at all. The multiplier is exactly 1 at age zero, and because 96.5\% of singletons are younger than 64 generations the weighted average is 1.07. So $V_M$, which is a question about age zero, carries a $\sim$7\% bias, while $\lambda$, which is a question about change across age, does not survive.
-
-The power calculations to me show that estimating lambda is simply not possible under the singleton model.
-
-So I think there are some ways forward, unless you have any ideas about saving $\lambda$!
-
-
-\begin{enumerate}
-    \item We can go ahead and estimate $V_M$ - which I think is very possible using the singleton method - all the simulations have shown it's within reach. We can also get at lambda via a different route - if you remember, we can use $c * (V_M/V_P) / H^2$ - where $c$ is the constant value that links $K_{SEL}$ and $\lambda$ from the SLiM simulations. This is less elegant since it relies on a constant estimated from SLiM simulations, but it's still a nice add on anyway.
-    \item One nice consequence is we could estimate $V_M$ alone without singleton dates and fixing $\lambda=0$. The ages of alleles only enter our model through $f(\lambda,t)$ - i.e. what fraction of their original variance mutations of age $t$ have. Setting $\lambda = 0$ makes $f = 1$ in every bin, so the model collapses to $v_i = \sigma^2_m T_i + \sigma^2_e$, where $T_i$ is simply person $i$'s total singleton count. No ages appear anywhere. The cost is small and boundable: at $t_0 = 17$ generations and $\lambda = 10^{-3}$ the decay we are ignoring is $1/(1+0.017) = 0.983$, so about 1.7\%. Selection has essentially had no time to act over 400 years. This has the very enticing prospect of being able to be run without waiting for however long the tsdate ages will be to arrive. Daiki, a former DPhil student in the stats departme \textbf{[Sam: finish this - what does Daiki already have?]}
-
-    \item We could also fit a model with MAF $\times$ AGE bins as REML components. Here, rather than conditioning on MAC $=1$ and hoping frequency doesn't matter, we would model the whole frequency--age plane and integrate frequency out using the observed weights at each age. The motivation is the same identifiability problem as above, seen from the other side: singletons give us one point on the decay curve, whereas all variants give us the whole curve. Across the singleton age range $f(\lambda, t)$ varies by about 2\%, which is why nothing is identifiable; across the full spectrum, from $10^0$ to $10^4$ generations, it varies more than tenfold. We would also gain on the other term in the power formula, since $h^2_{sing} = 0.034$ becomes the full $h^2$.
-
-    Usefully, the machinery already exists. RHE-mc (Pazokitoroudi et al. 2020) fits 144 MAF $\times$ LD variance components on 300,000 individuals in under an hour using randomised Haseman--Elston, and already computes per-allele $\alpha^2_k = h^2_k / (M_k \cdot 2f_k(1-f_k))$, which is exactly the quantity we want. Adding age as a third axis is an extension of a published and validated method rather than new machinery, and the singleton analysis sits inside it as the MAC $=1$ column.
-
-    There is a further prize here. The standard reading of the MAF--effect relationship (Gazal et al., and RHE-mc's own headline result) is that it reflects negative selection. Our SLiM result says that relationship is absent in young variants and only develops over $\sim$100 generations. So we can ask directly whether per-allele $\alpha^2$ still depends on MAF once allele age is conditioned on. Either answer is interesting, and nobody has been able to ask it before because genome-wide allele ages at biobank scale did not exist.
-
-    The costs are real: LD means we can no longer treat variants as independent contributors, allele age becomes load-bearing rather than optional (see below), and the variant count is $\sim10^3$ times RHE-mc's benchmark so we would need to subsample within cells.
-
-    \item Before any of the above, we can validate the $\lambda = 0$ assumption empirically rather than analytically, using the large UKB-style stabilizing selection SLiM run. Binning all variants by true age and computing mean $\beta^2$ over 0--60 generations gives the decay directly; weighting those bins by the UKB singleton age distribution from our msprime run gives the exact bias for our design. This needs no estimator and no new simulation. Note that $\mathbb{E}[\beta^2 \mid t]$ is a property of the population rather than the sample, so it transfers regardless of what sample size the SLiM was run at - SLiM supplies $f(t)$ and msprime supplies the weights. The same run also lets us check the ascertainment bias at AC $=1$, build the empirical MAF $\times$ age surface, and run tsinfer/tsdate on its tree sequence to get a realistic dating error profile.
-\end{enumerate}
+Second, our model says $\mathbb{E}[\beta^2 \mid t] = \sigma_m^2 \cdot f(\lambda, t)$ -- the expected squared effect of a surviving mutation depends on its age, the strength of stabilising selection and nothing else. We have not included MAC in this model anywhere. The reason this matters is that frequency and effect size are not related in a fixed way: the relationship is not constant across time. A brand new mutation is rare because it is new, so its frequency tells you nothing about its effect, because selection hasn't had any time to change its frequency. An old variant that is still rare must have been held down by selection, so by then frequency is highly informative. If we split into batches we end up selecting variants on allele frequency -- $B = 30{,}000$ picks out variants near AC 17, and $B = 2{,}500$ picks out AC 200 -- so we are conditioning on a variable that isn't in the model. Because the frequency--effect relationship strengthens with age, a fixed allele count picks out mild variants when they are young and severe ones when they are old, which makes $\beta^2$ appear to \emph{rise} with age and biases $\hat\lambda$ downwards. This does not happen when we ascertain cohort singletons, because a brand new mutation has exactly one copy by definition: at age zero `select the singletons' selects nothing, so the bias starts at 1 and only grows as variants age. Since almost all singletons are young, it stays small. I have shown this using simulations in SLiM, but in the interests of keeping this document a manageable length I've excluded it.
 
 \section{Dating variants with tsdate.}
 
-Lastly I was just playing around with tsdate to see how well we could date variants under perfect scenarios.  I ran tsdate on the msprime tree sequence (40.5M variants, $n = 500{,}000$, $L = 10^8$) and compared inferred to true ages. Note this uses the true topology, so it isolates tsdate's time inference and is a lower bound on the error we would see in real data, where tsinfer adds topology error on top. This may espeically be the case for singletons, since phasing singletons is especially challenging.
+Lastly I was just playing around with tsdate to see how well we could date variants under perfect scenarios. I ran tsdate on the msprime tree sequence (40.5M variants, $n = 500{,}000$, $L = 10^8$) and compared inferred to true ages. Note this uses the true topology, so it is specifically a measure of tsdate under a perfect tree and is a lower bound on the error we would see in real data, where tsinfer adds topology error on top. This may especially be the case for singletons, since phasing singletons is especially challenging.
 
-The result is clean and unhelpful: tsdate shrinks allele ages toward the prior, pivoting at about 12 generations (Figure 2). At MAC $=1$, variants truly younger than one generation come back about 11 times too old, while variants in the 128--255 generation bin come back at 0.57 of their true age. The crossing point is close to the geometric mean singleton age, which is the signature of a posterior collapsing onto its prior because the likelihood carries no information - a MAC $=1$ variant has no concordant carrier pairs to date from.
+The result is quite clean and probably as expected. tsdate over estimates the age of young singletons and under estimates the age of old singletons - and generally shrinks singleton allele ages toward the prior, pivoting at about 12 generations (Figure \ref{fig:tsdate}). At MAC $=1$, variants truly younger than one generation come back about 11 times too old, while variants in the 128--255 generation bin come back at 0.57 of their true age. The crossing point is close to the geometric mean singleton age, which is the signature of a posterior collapsing onto its prior because the likelihood carries almost no information. I spoke to Yan and Duncan and they said the only information tsdate has to go on for singleton dating is the branch length.
 
-The consequence that matters for us is not the per-variant error but the compression. Weighting by the singleton age distribution, the SD of log age falls from 1.30 (true) to 0.99 (inferred), and only 0.67 of that tracks the truth - the rest is noise. The correlation between true and inferred log age is 0.63. Since the entire signal for $\lambda$ is the spread of ages, losing half the usable spread compounds the $t_0$ problem rather than relieving it.
+Dating seems to be reliable where variants are common. For example at MAC $\geq 256$ the bias is 1.01 - this confirms the pipeline is working and this is likely a problem of lack of information rather than a bug. It also seems like the bias is better described as a function of how unusual a variant's age is given its frequency, rather than MAC alone -- the typical variant at each MAC is nearly unbiased, and it is the tails that shrink.
 
-Dating is reliable where variants are common: at MAC $\geq 256$ the bias is 1.01 with multiplicative scatter 1.07, which also confirms the pipeline is working and that this is an information problem rather than a bug. Usefully, the bias is better described as a function of how unusual a variant's age is \emph{given its frequency} than of MAC alone - the typical variant at each MAC is nearly unbiased, and it is the tails that shrink.
-
-Two implications. First, this reinforces option 2: the $V_M$ estimate requires no per-variant ages at all, so none of this touches it. The only place dating enters is through $t_0$, a single number used to state the 1.7\% bound, and a 14\% error in $t_0$ changes $V_M$ by 0.2\%. Second, it sharpens the trade in option 3: the MAF $\times$ age design needs ages everywhere, but it puts most of its weight on common variants where dating is accurate, whereas the singleton design put all of its weight on the one class where dating fails completely.
-
-\begin{figure}
+\begin{figure}[H]
 \centering
         \includegraphics[totalheight=7cm]{"/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations/figs/tests/tsdate/tsdate_shrinkage.png"}
-    \caption{tsdate shrinks allele ages toward the prior. Left: inferred against true age, coloured by minor allele count; at MAC $=1$ a 10,000-fold range of true age maps onto roughly a 1.4-fold range of inferred age, so the line runs flat along the prior rather than along $y = x$. Middle: the same as a ratio, making the pivot explicit - everything younger than $\sim$12 generations comes back too old and everything older comes back too young, with the whole family of curves rotating about that point and straightening as MAC rises. Right: what this does to the singleton age distribution. The SD of log age falls from 1.30 to 0.99, of which only 0.67 tracks the truth, and the correlation between true and inferred log age is 0.63.}
+    \caption{tsdate shrinks allele ages toward the prior. Left: inferred against true age, coloured by minor allele count; at MAC $=1$ a 10,000-fold range of true age maps onto roughly a 1.4-fold range of inferred age, so the line runs flat along the prior rather than along $y = x$. Middle: the same as a ratio, making the pivot explicit -- everything younger than $\sim$12 generations comes back too old and everything older comes back too young, with the whole family of curves rotating about that point and straightening as MAC rises. Right: what this does to the singleton age distribution. The SD of log age falls from 1.30 to 0.99, of which only 0.67 tracks the truth, and the correlation between true and inferred log age is 0.63.}
     \label{fig:tsdate}
 \end{figure}
+
+This has two implications for our project. First, this makes options 2 and 3 below a bit more attractive: an estimate of $V_M$ with $\lambda$ fixed at zero requires no per-variant ages at all, so none of this bias / error affects those. The only place dating enters is through $t_0$, a single number used to state the 1.7\% bound, and a 14\% error in $t_0$ changes $V_M$ by 0.2\%. Second, it also makes option for a bit more attractive too: the MAC $\times$ age design needs ages everywhere, but it puts most of its weight on common variants where dating is accurate, whereas the singleton design put all of its weight on the one class where dating is the worst.
+
+\section{Future directions}
+
+So I think there are some ways forward, unless you have any clever ideas about saving $\lambda$!
+
+\begin{enumerate}
+    \item \textbf{Continue as we planned, accept that our estimate of $\lambda$ will be noisy, and focus on $V_M$ as the quantity of interest}. We might have to ensure that the way we estimate $\lambda$ doesn't bias how we estimate $V_M$.
+    \item \textbf{Keep the joint model, fix $\lambda = 0$, and estimate $V_M$ alone.} This makes the assumption that selection won't affect singleton variance much. Taking mean singleton age $t_0 = 17$ and $\lambda = 10^{-3}$, the hyperbolic formula gives $1/(1 + \lambda t_0) = 1/(1+0.017) = 0.983$, so our estimate of $V_M$ would be off by about 1.7\%. Basically, over 17 generations selection won't have had much time to reduce the variance of singleton effect sizes.
+    \item \textbf{Drop $t$ from the model entirely and estimate $V_M$ using the same logic as above.} Rather than binning by age, drop the allele ages from the model altogether and estimate $V_M$ as the starting variance of singletons, assuming the variance lost is negligible. Less elegant, but it has the benefit of being able to run without tsinfer/tsdate, which would really speed up the analysis timeline and maybe also allow us to analyse more cohorts.
+    \item \textbf{Jointly model MAC and $t$ as REML components}. Instead of ignoring the dependency between MAC and effect size, we could model it. This would be a more ambitious model and would likely introduce different challenges, like LD, but it would in theory allow us to understand the relationship between MAC, $t$ and $\lambda$ all at once, which I think could be very interesting.
+\end{enumerate}
 
 \end{document}

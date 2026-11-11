@@ -66,36 +66,67 @@ fisher_se_lambda <- function(C, ages, sigma_m2, sigma_e2, lambda,
 ## slightly (0.38 -> 0.34) as Poisson noise shrinks, so this is mildly
 ## conservative.
 ## ---------------------------------------------------------------------------
-prepare_counts <- function(C, trep, kdist, scale = L_GENOME / L_SIM) {
+prepare_counts <- function(C, trep, scale = L_GENOME / L_SIM) {
   C  <- as.matrix(C)
   ok <- is.finite(trep) & colSums(C) > 0
-  list(C = C[, ok, drop = FALSE] * scale, ages = trep[ok], kdist = kdist)
+  list(C = C[, ok, drop = FALSE] * scale, ages = trep[ok])
 }
+## Design: N_BB independent biobanks, each of N_PER people, each defining
+## singletons within its own cohort.
+##
+## Because "singleton" is cohort-relative, h2_sing, t0 and CV_age are
+## properties of ONE biobank and do NOT degrade as banks are added. This is
+## the whole point of the design: growing a single cohort instead would shrink
+## them (singletons per person ~ 1/n), which is why that version doesn't scale.
+##
+## Independent banks sample different people carrying different recent
+## mutations, so Fisher information ADDS -- no sqrt(k) sharing penalty like
+## the within-cohort batching design:
+##
+##     I_total = N_BB * I_per_bank    =>    SE ~ 1 / sqrt(N_BB * N_PER)
+##
+## CHECK BEFORE USE: assumes fisher_se_lambda() returns the SE for the
+## nrow(C) individuals in C. If it already rescales to a fixed N internally,
+## drop n_sim from the ratio below or you will double-count.
+##
+## This is the bound for a POOLED fit (sum per-bank log-likelihoods, lambda
+## shared, maximise once). Meta-analysing per-bank lambda-hats will not attain
+## it -- at per-bank information levels those estimates are biased and
+## heavy-tailed.
+## ---------------------------------------------------------------------------
 
-fisher_se_lambda_trait <- function(prep, vm_vp, lambda, curve = "hyperbolic") {
+fisher_se_lambda_trait <- function(prep, vm_vp, lambda, curve = "hyperbolic",
+                                   N_BB = 1, N_PER = 5e5) {
   C <- prep$C; ages <- prep$ages
   sigma_m2 <- vm_vp / U                       # V_P standardised to 1
   w  <- if (curve == "exponential") exp(-lambda * ages) else 1 / (1 + lambda * ages)
 
+  ## per-cohort quantities -- independent of N_BB by construction
   h2_sing <- sigma_m2 * mean(as.vector(C %*% w))
   t0      <- sum(colSums(C) * ages) / sum(colSums(C))
+
+  N_total <- N_BB * N_PER
 
   ## h2_sing >= 1 is not a numerical failure -- it is the design breaking down.
   ## Past this point "batch-singletons" are no longer recent mutations and the
   ## model is incoherent with V_P = 1. Record it rather than stopping, so the
   ## sweep completes and shows where the boundary falls.
   if (!is.finite(h2_sing) || h2_sing >= 1)
-    return(list(se = NA_real_, h2_sing = h2_sing, t0 = t0))
+    return(list(se = NA_real_, se_sim = NA_real_, h2_sing = h2_sing,
+                t0 = t0, N_total = N_total))
 
-  list(se = fisher_se_lambda(C, ages, sigma_m2, 1 - h2_sing, lambda, curve),
-       h2_sing = h2_sing, t0 = t0)
+  se_sim <- fisher_se_lambda(C, ages, sigma_m2, 1 - h2_sing, lambda, curve)
+
+  list(se      = se_sim * sqrt(nrow(C) / N_total),   # scale to the real design
+       se_sim  = se_sim,                             # keep the raw one for QC
+       h2_sing = h2_sing,
+       t0      = t0,
+       N_total = N_total)
 }
 
 power_lambda <- function(lambda, se, z_a = Z_ALPHA) {
   ifelse(is.na(se), NA_real_, pnorm((lambda / se) - z_a))
-}
-
-decay <- function(lambda, t, curve = "hyerpbolic") {
+}decay <- function(lambda, t, curve = "hyerpbolic") {
   switch(curve,
     exponential = exp(-lambda * t),
     hyperbolic  = 1 / (1 + lambda * t),
