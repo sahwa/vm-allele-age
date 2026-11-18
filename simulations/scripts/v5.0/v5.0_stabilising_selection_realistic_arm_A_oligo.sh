@@ -4,11 +4,13 @@
 #   Run this arm first: short jobs, no resume, no checkpoint pileup.
 #
 #   sbatch --array=1-600 run_armA_oligo.sh
+#SBATCH -A visscher-wray.prj
 #SBATCH --job-name=stabA
-#SBATCH --mem=32G
-#SBATCH --partition=long          # CHECK your cluster's partition name
+#SBATCH --mem=48G
+#SBATCH --partition=short
 #SBATCH --output=armA_%A_%a.out
 #SBATCH --error=armA_%A_%a.err
+#SBATCH --array=1-600%20
 
 set -euo pipefail
 

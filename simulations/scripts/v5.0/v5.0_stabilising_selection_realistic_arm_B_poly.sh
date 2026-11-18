@@ -6,6 +6,7 @@
 #
 #   sbatch --array=1-14 run_armB_poly.sh
 #   requeue a timed-out task: sbatch --array=<id> run_armB_poly.sh
+#SBATCH -A visscher-wray.prj
 #SBATCH --job-name=stabB
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=64G
@@ -16,9 +17,9 @@
 set -euo pipefail
 
 BASE=/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations
-CONFIG=${BASE}/scripts/v5.0/armA_jobs.tsv
+CONFIG=${BASE}/scripts/v5.0/armB_jobs.tsv
 SLIM_SCRIPT=${BASE}/scripts/v5.0/v5.0_stabilising_selection_realistic.slim
-OUT_DIR=${BASE}/data/v5.0/armA_oligo
+OUT_DIR=${BASE}/data/v5.0/armB_oligo
 
 
 MU=1.28e-8
