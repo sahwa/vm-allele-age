@@ -10,7 +10,7 @@
 #SBATCH --partition=short
 #SBATCH --output=armA_%A_%a.out
 #SBATCH --error=armA_%A_%a.err
-#SBATCH --array=1-600%20
+#SBATCH --array=1-600
 
 set -euo pipefail
 

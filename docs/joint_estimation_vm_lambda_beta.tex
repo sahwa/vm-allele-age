@@ -1,0 +1,224 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsfonts}
+\usepackage[parfill]{parskip}
+\title{Joint estimation of $\sigma_{m}^{2}$, $\lambda$ and $\sigma_{e}^{2}$ from population-level data}
+\author{Sam Morris}
+\date{October 2026}
+
+\begin{document}
+
+
+\maketitle
+
+\section{Estimands}
+
+We are interested in estimating three parameters from data on mutation counts and ages.
+
+\begin{enumerate}
+    \item $\sigma^2_m$ - variance per new mutation
+    \item $K$ - the fitness landscape around a particular trait
+    \item $\sigma^2_e$ - the residual variation
+\end{enumerate}
+
+\section{Model}
+
+As before, we consider a standardised phenotype $y$ with variance $v_i$ given as:
+
+\begin{equation}
+    v_i = \sigma^2_m + \sigma^2_e + \sum_{k,m} C_{ikm} w(t_k, n_m)
+\end{equation}
+
+Where we have $k \times t$
+
+We begin by assuming that the effect size of new mutations are drawn from a normal distribution $\beta \sim \mathcal{N}(0, \sigma^2_m)$ and that stabilising selection acts upon new mutations such that $s = K  \beta^2$. Our aim is to derive the weight function:
+
+\begin{equation}
+    w(t, n) = \frac{\mathbb{E}[\beta^2 | t, n]}{\sigma^2_m}
+\end{equation}
+
+Which tells us - compared to a brand new mutation, what is the expected effect size of a mutation with allele acount $n$ and age $t$.
+
+We will use the branching approximation to solve this. Each new mutation starts with a single copy and each generation produces a Poisson-distribution number of descendents with mean $1-s$. Therefore:
+
+\begin{equation}
+    N_{t+1} | N_t = n \approx \text{Poisson}(N(1-s))
+\end{equation}
+
+We need the probability of observing n copies after t generations. This can be split into two probabilities:
+
+\begin{equation}
+    P(N_t = n | s) P(\text{surv} t | s) \times P(N_t = n | \text{survive}, s)
+\end{equation}
+
+Which tells us - for a mutation to have $n$ copies today, it must firsts survive, then reach $n$ copies.
+
+For a near-critical branching process (i.e. a process where the mean number of offpsring is close to 1), the survival probability is given as
+
+\begin{equation}
+    P(\text{survive} | t, s) \approx \frac{2s}{\sigma^2_{off}(e^{st}) -1 }
+\end{equation}
+
+Where $\sigma^2_{off}$ is the variance in the number of offpsring an individual produces. For a Poisson process, this is 1 in a weak-selection regime. When $st$ is small, we can use the Taylor expansion to simplify $e^{st}$:
+
+\begin{align}
+    e^{st} - 1 &\approx st + \frac{st^2}{2} \\
+    &\approx st(s+\frac{st}{2})
+\end{align}
+
+Subtituting back we get:
+
+\begin{align}
+    P(\text{survive} | t, s) &\approx \frac{2s}{\sigma^2_{off} st (1+st/2)} \\
+    &\approx \frac{2}{\sigma^2_{off}t} \frac{1}{1 + st/2}
+\end{align}
+
+Note here that we have decomposed this expression into the neutral part which does not rely on $s$, $\frac{2}{\sigma^2_{off}t}$ and the part that is conditional on selection $\frac{1}{1+st/2}$.
+
+When $st$ is small:
+
+\begin{equation}
+    \frac{1}{1+st/2} \approx 1 - \frac{st}{2}
+\end{equation}
+
+We know that:
+
+\begin{equation}
+    1 - \frac{st}{2}  \approx e^{-st/2}
+\end{equation}
+
+We can finally obtain:
+
+\begin{equation}
+    P(\text{survive} | t, s) \propto e^{-st/2}
+\end{equation}
+
+The intuitition here is that larger selective disadvantage make mutations less likely to survive, and that penalty grows with $t$.
+
+Now we need to determine the probability of reaching $n$ copies given survival. For a old, surviging, near-critical lineage, its count is approximately exponentially distributed:
+
+\begin{equation}
+    p(n |\text{survive}, t, s) \approx \frac{1}{\bar{n} e^{-n/\bar{n}}}
+\end{equation}
+
+Where $\bar{n}$ is the expected lineage size, conditional on survival.
+
+The branching approximation gives $\bar{n}(t, s) = \frac{\sigma^2_{\text{off}}(1-e^{st})}{2s}$
+
+For small $st$ we can expand the exponential:
+
+\begin{equation}
+    1-e^{-st} \approx st - \frac{s^2t^2}{2}
+\end{equation}
+
+Substituting:
+\[
+\bar n(t,s)
+\approx
+\frac{\sigma_{\mathrm{off}}^2t}{2}
+\left(1-\frac{st}{2}\right).
+\]
+
+Define the neutral expected count:
+\[
+\boxed{
+\bar n_0(t)=\frac{\sigma_{\mathrm{off}}^2t}{2}.
+}
+\]
+
+Therefore,
+\[
+\boxed{
+\bar n(t,s)\approx
+\bar n_0(t)\left(1-\frac{st}{2}\right).
+}
+\]
+
+The intuition is that amongst mutations that survive, selection tends to reduce the size of the lineages.
+
+If we go back to the count probability:
+
+\begin{equation}
+    p(n |\text{survive}, t, s) \approx \frac{1}{\bar{n} e^{-n/\bar{n}}}
+\end{equation}
+
+and take logs of both sides, we obtain:
+
+\begin{equation}
+    \text{log} P = -\text{log}\bar{n} - \frac{n}{\bar{n}}
+\end{equation}
+
+Substituting our approximation and expanding to the first order gives us:
+
+\begin{equation}
+    log P \approx -\log(\bar{n}_0 - \frac{n}{\bar{n}_0} + \frac{st}{2}(1-\frac{n}{\bar{n}_0}))
+\end{equation}
+
+If we ignore the first part, this results in
+
+\[
+\boxed{
+P(n\mid\mathrm{survive},t,s)
+\propto
+\exp\left[
+\frac{st}{2}
+\left(1-\frac{n}{\bar n_0(t)}\right)
+\right].
+}
+\]
+
+\section{Putting the pieces together}
+
+We have the following equations:
+
+\begin{equation}
+    P(\text{survive} | t, s) \propto e^{-st/2}
+\end{equation}
+
+
+\begin{equation}
+    P(n | \text{survive}, t, s) \propto e^{\frac{st}{2}(1-n/\bar{n}_0)}
+\end{equation}
+
+We multiply these together:
+
+\[
+P(n\mid t,s)
+\propto
+e^{-st/2}
+e^{\frac{st}{2}(1-n/\bar n_0)}.
+\]
+
+When we multiply exponentials, we add their exponents:
+\[
+-\frac{st}{2}
++
+\frac{st}{2}\left(1-\frac{n}{\bar n_0}\right).
+\]
+
+The first two terms cancel, leaving
+\[
+\boxed{
+P(n\mid t,s)\propto
+\exp\left(-\frac{stn}{2\bar n_0(t)}\right).
+}
+\]
+
+The interesting thing here is that the survival and lineage-size partly cancel, eliminating the age terms from this approximation.
+
+\section{6}
+
+Remember we defined:
+
+\begin{equation}
+    s = K\beta^2
+\end{equation}
+
+We can substitute this into
+
+\begin{equation}
+    P(n | t, \beta) \propto \exp(-\frac{Ktn}{2\bar{n}_0 (t)}\beta^2)
+\end{equation}
+
+\end{document}
