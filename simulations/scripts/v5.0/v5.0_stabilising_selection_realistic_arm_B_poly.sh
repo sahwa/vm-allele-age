@@ -13,6 +13,7 @@
 #SBATCH --partition=long           # CHECK your cluster's partition name
 #SBATCH --output=armB_%A_%a.out
 #SBATCH --error=armB_%A_%a.err
+#SBATCH -a 1-14
 
 set -euo pipefail
 
