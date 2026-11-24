@@ -1,0 +1,139 @@
+// v5.1 - v5.0 with mutation-at-birth diagnostics.
+// Each accepted new m2 mutation contributes to cumulative n, sum(beta), sum(beta^2).
+// These include mutations that subsequently go extinct.
+// IMPORTANT: the birth totals cover the CURRENT RUN only. If RESUME is used,
+// they cover only mutations created after resumption, not earlier history.
+
+initialize() {
+    if (!exists("RESUME"))       defineConstant("RESUME", "");
+    if (!exists("CKPT_EVERY"))   defineConstant("CKPT_EVERY", 10000);
+    if (!exists("LOG_EVERY"))    defineConstant("LOG_EVERY", 1000);
+    if (!exists("NEUTRAL"))      defineConstant("NEUTRAL", F);
+    if (!exists("MEAN_EFFECT"))  defineConstant("MEAN_EFFECT", 0.0);
+    if (!exists("SD_EFFECT"))    defineConstant("SD_EFFECT", 0.1);
+    if (!exists("GROWTH_RATE"))  defineConstant("GROWTH_RATE", 0.0);
+    if (!exists("GROWTH_TICKS")) defineConstant("GROWTH_TICKS", 0);
+    defineConstant("start_time", clock());
+
+    defineConstant("SIGMA2_M", MEAN_EFFECT^2 + SD_EFFECT^2);
+    defineConstant("U_TRAIT", 2 * MU * PI_TARGET * L);
+    defineConstant("V_M", U_TRAIT * SIGMA2_M);
+    defineConstant("LAMBDA_PRED", NEUTRAL ? 0.0 else SIGMA2_M / V_S);
+
+    initializeTreeSeq();
+    initializeMutationRate(MU * PI_TARGET);
+    initializeRecombinationRate(1e-8);
+    initializeMutationType("m2", 0.5, "n", MEAN_EFFECT, SD_EFFECT);
+    m2.convertToSubstitution = T;
+    initializeGenomicElementType("g2", m2, 1);
+    initializeGenomicElement(g2, 0, L - 1);
+}
+
+// New: count the ACTUAL accepted mutation effects at creation, before selection.
+// No per-mutation disk writes; only three running totals are maintained.
+mutation(m2) {
+    beta = mut.selectionCoeff;
+    sim.setValue("birth_n", sim.getValue("birth_n") + 1);
+    sim.setValue("birth_sum_beta", sim.getValue("birth_sum_beta") + beta);
+    sim.setValue("birth_sum_beta2", sim.getValue("birth_sum_beta2") + beta^2);
+    return T;
+}
+
+mutationEffect(m2) { return 1.0; }
+
+fitnessEffect() {
+    if (NEUTRAL) return 1.0;
+    phenotype = individual.sumOfMutationsOfType(m2) + FIXED_OFFSET;
+    return exp(-(phenotype^2) / (2 * V_S));
+}
+
+1 early() {
+    if (RESUME != "") {
+        sim.readFromPopulationFile(RESUME);
+        catn("Resumed from " + RESUME + " at tick " + community.tick);
+        catn("WARNING: birth diagnostics will only count mutations after resumption.");
+    } else {
+        sim.addSubpop("p1", NE);
+    }
+    defineGlobal("FIXED_OFFSET", 2 * sum(sim.substitutions.selectionCoeff));
+
+    // Initialize birth counters before the first generation of new mutations.
+    sim.setValue("birth_n", 0);
+    sim.setValue("birth_sum_beta", 0.0);
+    sim.setValue("birth_sum_beta2", 0.0);
+
+    catn("=== configuration ===");
+    catn("  NEUTRAL      " + NEUTRAL);
+    catn("  V_S          " + V_S);
+    catn("  MEAN_EFFECT  " + MEAN_EFFECT + "   SD_EFFECT " + SD_EFFECT);
+    catn("  sigma2_m     " + format("%.4e", SIGMA2_M));
+    catn("  U_trait      " + format("%.4f", U_TRAIT) + " muts/diploid/gen");
+    catn("  V_M          " + format("%.4e", V_M));
+    catn("  lambda_pred  " + format("%.4e", LAMBDA_PRED));
+    catn("  growth       rate " + GROWTH_RATE + " over last " + GROWTH_TICKS + " ticks");
+    catn("=====================");
+}
+
+1: late() {
+    defineGlobal("FIXED_OFFSET", 2 * sum(sim.substitutions.selectionCoeff));
+
+    if (GROWTH_RATE > 0 & GROWTH_TICKS > 0) {
+        g0 = END_TICK - GROWTH_TICKS;
+        if (community.tick > g0) {
+            newN = asInteger(round(NE * exp(GROWTH_RATE * (community.tick - g0))));
+            p1.setSubpopulationSize(newN);
+        }
+    }
+
+    if (community.tick % LOG_EVERY == 0) {
+        elapsed = clock() - start_time;
+        inds = sim.subpopulations.individuals;
+        z = inds.sumOfMutationsOfType(m2) + FIXED_OFFSET;
+        vg = var(z);
+        cat("Tick " + community.tick + " / " + END_TICK
+            + "  N: " + size(inds)
+            + "  mean_z: " + format("%.3f", mean(z))
+            + "  V_G: " + format("%.4f", vg)
+            + "  V_M/V_P: " + format("%.3e", V_M / vg)
+            + "  V_S/V_P: " + format("%.2f", NEUTRAL ? 0.0 else V_S / vg)
+            + "  n_seg: " + size(sim.mutations)
+            + "  n_subs: " + size(sim.substitutions)
+            + "  (" + format("%.0f", elapsed) + "s)\n");
+    }
+
+    if (community.tick % CKPT_EVERY == 0 & community.tick < END_TICK) {
+        sim.treeSeqOutput(outfile + ".tick" + community.tick + ".trees");
+        catn("Checkpoint at tick " + community.tick);
+    }
+}
+
+END_TICK late() {
+    sim.treeSeqOutput(outfile + ".trees");
+
+    // NEW: write the three birth aggregates for the companion Python diagnostic.
+    birth_n = sim.getValue("birth_n");
+    birth_sum_beta = sim.getValue("birth_sum_beta");
+    birth_sum_beta2 = sim.getValue("birth_sum_beta2");
+    birth_hdr = "n_birth\tsum_beta\tsum_beta2";
+    birth_row = paste(c(birth_n, birth_sum_beta, birth_sum_beta2), sep="\t");
+    writeFile(outfile + ".birth.tsv", c(birth_hdr, birth_row));
+    catn("Birth effects: n=" + birth_n
+         + "  mean_beta2=" + format("%.6e", birth_sum_beta2 / birth_n)
+         + "  ratio_to_nominal=" + format("%.6f", birth_sum_beta2 / birth_n / SIGMA2_M));
+    catn("Wrote " + outfile + ".birth.tsv");
+
+    inds = sim.subpopulations.individuals;
+    z = inds.sumOfMutationsOfType(m2) + FIXED_OFFSET;
+    vg = var(z);
+    hdr = paste(c("outfile","neutral","V_S","mean_effect","sd_effect",
+                  "sigma2_m","U_trait","V_M","N_final","V_G","V_M_over_V_P",
+                  "V_S_over_V_P","lambda_pred","n_seg","n_subs"), sep="\t");
+    row = paste(c(outfile, NEUTRAL, V_S, MEAN_EFFECT, SD_EFFECT,
+                  SIGMA2_M, U_TRAIT, V_M, size(inds), vg, V_M / vg,
+                  NEUTRAL ? 0.0 else V_S / vg, LAMBDA_PRED,
+                  size(sim.mutations), size(sim.substitutions)), sep="\t");
+    writeFile(outfile + ".summary.tsv", c(hdr, row));
+    catn("Wrote " + outfile + ".summary.tsv");
+
+    sim.simulationFinished();
+}

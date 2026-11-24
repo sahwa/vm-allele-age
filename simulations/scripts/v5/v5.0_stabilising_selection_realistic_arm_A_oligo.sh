@@ -12,12 +12,11 @@
 #SBATCH --error=armA_%A_%a.err
 #SBATCH --array=1-600
 
-set -euo pipefail
-
 BASE=/well/visscher-wray/users/uwu199/projects/vm-allele-age/simulations
-CONFIG=${BASE}/scripts/v5.0/armA_jobs.tsv
-SLIM_SCRIPT=${BASE}/scripts/v5.0/v5.0_stabilising_selection_realistic.slim
-OUT_DIR=${BASE}/data/v5.0/armA_oligo
+CONFIG=${BASE}/scripts/v5/armA_jobs.tsv
+SLIM_SCRIPT=${BASE}/scripts/v5/v5.1_stabilising_selection_realistic.slim
+OUT_DIR=${BASE}/data/v5.1/armA_oligo
+mkdir -p ${OUT_DIR}
 
 # fixed parameters -- INTEGER literals (25e3 / 5e8 / 75e3 are floats in Eidos)
 MU=1.28e-8

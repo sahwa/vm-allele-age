@@ -1,35 +1,8 @@
-// v5.0 — Gaussian stabilising selection on an additive trait.
-//
-// Changes from v2.1:
-//   [A] NEUTRAL flag          -> the lambda = 0 null run (the single most
-//                                valuable control: the pipeline must report
-//                                zero ascertainment bias here).
-//   [B] MEAN_EFFECT parameter -> a skewed DFE, so E[beta] != 0 can be tested.
-//                                With a symmetric DFE that assumption is true
-//                                by construction and is never tested.
-//   [C] Derived diagnostics   -> every run reports V_G, V_M, V_M/V_P, V_S/V_P
-//                                and the predicted lambda, so each rung of the
-//                                ladder is interpretable as a TRAIT rather
-//                                than as a parameter setting.
-//   [D] Optional growth phase -> off by default. Demography drives the
-//                                singleton age distribution, which drives the
-//                                ascertainment bias.
-//   [E] Summary file written at the end for the sweep table.
-//
-// Required -d constants:  MU, PI_TARGET, L, NE, V_S, END_TICK, outfile
-// Optional -d constants:  NEUTRAL, MEAN_EFFECT, SD_EFFECT, GROWTH_RATE,
-//                         GROWTH_TICKS, CKPT_EVERY, RESUME, LOG_EVERY
-//
-// NOTE ON lambda: the predicted value below is sigma2_m / V_S, which pairs
-// with the age-only decay written as 1/(1 + lambda*t/2). If you fit your decay
-// curve as 1/(1 + lambda*t) you will measure HALF this. Do not rely on either
-// convention -- measure lambda from the fitted decay of E[beta^2] on true age
-// and treat the predicted value purely as a check on the derivation.
-//
-// NOTE ON PHENOTYPES: there is no environmental variance here, so selection
-// acts on the genetic value directly and V_P = V_G. Add sigma2_e in
-// post-processing (y_i = z_i/sqrt(V_P) + e_i); that way one run serves every
-// target h2.
+// v5.1 - v5.0 with mutation-at-birth diagnostics.
+// Each accepted new m2 mutation contributes to cumulative n, sum(beta), sum(beta^2).
+// These include mutations that subsequently go extinct.
+// IMPORTANT: the birth totals cover the CURRENT RUN only. If RESUME is used,
+// they cover only mutations created after resumption, not earlier history.
 
 initialize() {
     if (!exists("RESUME"))       defineConstant("RESUME", "");
@@ -42,10 +15,7 @@ initialize() {
     if (!exists("GROWTH_TICKS")) defineConstant("GROWTH_TICKS", 0);
     defineConstant("start_time", clock());
 
-    // sigma2_m = E[beta^2] = mean^2 + sd^2.  Shifting the mean changes BOTH
-    // the directional component and sigma2_m, so report it explicitly.
     defineConstant("SIGMA2_M", MEAN_EFFECT^2 + SD_EFFECT^2);
-    // expected new trait-affecting mutations per diploid per generation
     defineConstant("U_TRAIT", 2 * MU * PI_TARGET * L);
     defineConstant("V_M", U_TRAIT * SIGMA2_M);
     defineConstant("LAMBDA_PRED", NEUTRAL ? 0.0 else SIGMA2_M / V_S);
@@ -59,10 +29,20 @@ initialize() {
     initializeGenomicElement(g2, 0, L - 1);
 }
 
-mutationEffect(m2) { return 1.0; }        // neutral at the locus level
+// New: count the ACTUAL accepted mutation effects at creation, before selection.
+// No per-mutation disk writes; only three running totals are maintained.
+mutation(m2) {
+    beta = mut.selectionCoeff;
+    sim.setValue("birth_n", sim.getValue("birth_n") + 1);
+    sim.setValue("birth_sum_beta", sim.getValue("birth_sum_beta") + beta);
+    sim.setValue("birth_sum_beta2", sim.getValue("birth_sum_beta2") + beta^2);
+    return T;
+}
+
+mutationEffect(m2) { return 1.0; }
 
 fitnessEffect() {
-    if (NEUTRAL) return 1.0;              // [A] the lambda = 0 null
+    if (NEUTRAL) return 1.0;
     phenotype = individual.sumOfMutationsOfType(m2) + FIXED_OFFSET;
     return exp(-(phenotype^2) / (2 * V_S));
 }
@@ -71,10 +51,16 @@ fitnessEffect() {
     if (RESUME != "") {
         sim.readFromPopulationFile(RESUME);
         catn("Resumed from " + RESUME + " at tick " + community.tick);
+        catn("WARNING: birth diagnostics will only count mutations after resumption.");
     } else {
         sim.addSubpop("p1", NE);
     }
     defineGlobal("FIXED_OFFSET", 2 * sum(sim.substitutions.selectionCoeff));
+
+    // Initialize birth counters before the first generation of new mutations.
+    sim.setValue("birth_n", 0);
+    sim.setValue("birth_sum_beta", 0.0);
+    sim.setValue("birth_sum_beta2", 0.0);
 
     catn("=== configuration ===");
     catn("  NEUTRAL      " + NEUTRAL);
@@ -83,20 +69,14 @@ fitnessEffect() {
     catn("  sigma2_m     " + format("%.4e", SIGMA2_M));
     catn("  U_trait      " + format("%.4f", U_TRAIT) + " muts/diploid/gen");
     catn("  V_M          " + format("%.4e", V_M));
-    catn("  lambda_pred  " + format("%.4e", LAMBDA_PRED)
-         + "   (convention: 1/(1 + lambda*t/2); halve for 1/(1+lambda*t))");
-    catn("  growth       rate " + GROWTH_RATE + " over last "
-         + GROWTH_TICKS + " ticks");
+    catn("  lambda_pred  " + format("%.4e", LAMBDA_PRED));
+    catn("  growth       rate " + GROWTH_RATE + " over last " + GROWTH_TICKS + " ticks");
     catn("=====================");
 }
 
 1: late() {
-    // must run before fitness recalculation at the end of the tick
     defineGlobal("FIXED_OFFSET", 2 * sum(sim.substitutions.selectionCoeff));
 
-    // [D] optional exponential growth over the final GROWTH_TICKS generations.
-    // Kept inline rather than as a scheduled block so there is no rescheduling
-    // to get wrong. Replace with a published human model when you need one.
     if (GROWTH_RATE > 0 & GROWTH_TICKS > 0) {
         g0 = END_TICK - GROWTH_TICKS;
         if (community.tick > g0) {
@@ -108,17 +88,16 @@ fitnessEffect() {
     if (community.tick % LOG_EVERY == 0) {
         elapsed = clock() - start_time;
         inds = sim.subpopulations.individuals;
-        z  = inds.sumOfMutationsOfType(m2) + FIXED_OFFSET;
+        z = inds.sumOfMutationsOfType(m2) + FIXED_OFFSET;
         vg = var(z);
-        // [C] emergent quantities -- these are what make the run interpretable
         cat("Tick " + community.tick + " / " + END_TICK
             + "  N: " + size(inds)
-            + "  mean_z: "  + format("%.3f", mean(z))
-            + "  V_G: "     + format("%.4f", vg)
+            + "  mean_z: " + format("%.3f", mean(z))
+            + "  V_G: " + format("%.4f", vg)
             + "  V_M/V_P: " + format("%.3e", V_M / vg)
             + "  V_S/V_P: " + format("%.2f", NEUTRAL ? 0.0 else V_S / vg)
-            + "  n_seg: "   + size(sim.mutations)
-            + "  n_subs: "  + size(sim.substitutions)
+            + "  n_seg: " + size(sim.mutations)
+            + "  n_subs: " + size(sim.substitutions)
             + "  (" + format("%.0f", elapsed) + "s)\n");
     }
 
@@ -131,10 +110,20 @@ fitnessEffect() {
 END_TICK late() {
     sim.treeSeqOutput(outfile + ".trees");
 
-    // [E] one-line summary per run, for the sweep table.
-    // V_P = V_G because there is no environmental variance in the simulation.
+    // NEW: write the three birth aggregates for the companion Python diagnostic.
+    birth_n = sim.getValue("birth_n");
+    birth_sum_beta = sim.getValue("birth_sum_beta");
+    birth_sum_beta2 = sim.getValue("birth_sum_beta2");
+    birth_hdr = "n_birth\tsum_beta\tsum_beta2";
+    birth_row = paste(c(birth_n, birth_sum_beta, birth_sum_beta2), sep="\t");
+    writeFile(outfile + ".birth.tsv", c(birth_hdr, birth_row));
+    catn("Birth effects: n=" + birth_n
+         + "  mean_beta2=" + format("%.6e", birth_sum_beta2 / birth_n)
+         + "  ratio_to_nominal=" + format("%.6f", birth_sum_beta2 / birth_n / SIGMA2_M));
+    catn("Wrote " + outfile + ".birth.tsv");
+
     inds = sim.subpopulations.individuals;
-    z  = inds.sumOfMutationsOfType(m2) + FIXED_OFFSET;
+    z = inds.sumOfMutationsOfType(m2) + FIXED_OFFSET;
     vg = var(z);
     hdr = paste(c("outfile","neutral","V_S","mean_effect","sd_effect",
                   "sigma2_m","U_trait","V_M","N_final","V_G","V_M_over_V_P",
