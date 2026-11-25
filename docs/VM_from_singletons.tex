@@ -51,6 +51,63 @@ We therefore aim to derive an evolutionary weighting function $w(t,n;\lambda)$, 
 
 We will use population-genetic theory and simulations to quantify the bias introduced by approximating $\sigma_m^2$ using $\sigma_{\mathrm{singleton}}^2$.
 
+\section{Power}
+
+We begin with our conditional distribution of $Y_{i}$ on $C_i$
+
+\begin{equation}
+Y_i\mid C_i \sim
+\mathcal{N}\left(
+\mu,\,
+\sigma_e^2+C_i\sigma_{\mathrm{singleton}}^2
+\right).
+\end{equation}
+
+To simplify the notation let $\theta = \sigma^2_{\text{singleton}}$ and the individual variance $v_i = \sigma^2_e + C_i \theta$. Our model is therefore:
+
+\begin{equation}
+    Y_i | C_i \sim \mathcal{N}(\mu, v_i)
+\end{equation}
+
+We assume that individuals are indpendent and the likelihood of our data is the product f individual normal densities:
+
+\begin{equation}
+    \mathcal{L} = \prod^N_{i=1} \frac{1}{\sqrt{2\pi v_i}} \exp{[-\frac{(Y_i - \mu)^2}{2v_i}]}
+\end{equation}
+
+And we take logs to obtain the log-likelihood $\ell$
+
+
+\begin{equation}
+    \ell=
+    -\frac12\sum_{i=1}^N
+    \left[
+    \log(2\pi v_i)+
+    \frac{(Y_i-\mu)^2}{v_i}
+    \right]
+\end{equation}
+
+We want to obtain the Fisher information which is the expected negative second derivative of the log-likelihood. For a normally distributed observation whose variance depends on $\theta$ the standard results is that $\mathcal{I}(\theta)$ is
+
+
+\[
+\mathcal I(\theta)
+=
+\frac12\sum_{i=1}^N
+\frac{1}{v_i^2}
+\left(
+\frac{\partial v_i}{\partial\theta}
+\right)^2
+\]
+
+If $v_i = \sigma^2_e + C_i \theta$ then differentiating both sides gives us
+
+\begin{equation}
+    \frac{\partial v_i}{\partial \theta} = C_i
+\end{equation}
+
+
+
 \section{Derivation}
 
 \subsection{A. Population allele counts}

@@ -1,46 +1,33 @@
 #!/usr/bin/env python3
-"""Recovery of sigma2_m from singletons, pooled per simulation arm,
-against THREE denominators.
+"""Compare singleton squared effects with mutational input in SLiM tree sequences.
 
-    python3 singleton_recovery_v2.py [DIR] [--out results.tsv]
-                                     [--young-age 1] [--boot 2000]
+Usage:
+    python singleton_recovery_birth_v3.py /path/to/trees \
+        --birth-dir /path/to/trees --out diagnostics.tsv --boot 2000
 
-Numerator, every run:  E[beta^2 | singleton]
+For each arm, report pooled (mutation-count-weighted) mean(beta**2) ratios:
+  sing/nom, young/nom, sing/all, sing/young (original diagnostics)
+  birth/nom, sing/birth, young/birth (new birth diagnostics)
 
-Denominators:
-  nominal  sigma2_m typed into the config (MEAN_EFFECT^2 + SD_EFFECT^2).
-           What v1 used.
-  young    E[beta^2] over mutations no older than --young-age generations.
-           Selection has not acted on them yet, so this is an unbiased
-           estimate of the DFE as it was actually drawn in that run.
-           ** sing / young is the quantity you want: kappa. **
-  all      E[beta^2] over every segregating mutation (fixed sites excluded).
-           Under neutrality this must equal the singleton value, so for the
-           NULL arm sing / all is a clean extraction test.  For SELECTED arms
-           it is NOT kappa: older segregating variants have been filtered
-           harder than singletons, so this denominator is too small and the
-           ratio is pushed above kappa.
+Birth comparisons use ONLY replicates with matching .birth.tsv files.
+Bootstrap uncertainty resamples whole simulation replicates, not mutations.
+A single replicate cannot give a replicate-bootstrap SE.
 
-Reading the output:
-  young / nominal ~ 1    the effect sizes were drawn and stored correctly.
-  null  sing / young ~ 1 the extraction is unbiased.  If nominal says 1.017
-                         but this says 1.000, the anomaly was the denominator.
-  null  sing / young ~ 1.017 and young / nominal ~ 1
-                         singletons genuinely differ from new mutations under
-                         neutrality, which cannot happen biologically: an
-                         extraction bug to hunt for.
-
-All three ratios are formed from POOLED sums (sum of beta^2 / count across
-runs), not by averaging per-run ratios: the young denominator has only a few
-hundred mutations per run, and averaging 1/denominator over runs would add a
-bias of roughly CV^2 ~ 0.3%, the size of the effects being measured.  SEs are
-from a bootstrap over replicate runs, so they include between-run variance.
+CAUTION: age <= 1 does not guarantee a mutation has avoided selection.
+CAUTION: these are tree-sequence sample singletons, which may be population
+         singletons if the entire simulated population was recorded.
 """
-import sys, os, glob, re, argparse
+import argparse
+import csv
+import glob
+import os
+import re
+import sys
+
 import numpy as np
 import tskit
 
-#  arm          V_S   MEAN_EFFECT  SD_EFFECT  NEUTRAL      (from armA_jobs.tsv)
+# arm: (V_S, MEAN_EFFECT, SD_EFFECT, NEUTRAL)
 ARMS = {
     "null":       (5.0, 0.00, 0.1, True),
     "realistic":  (5.0, 0.00, 0.1, False),
@@ -50,157 +37,187 @@ ARMS = {
     "skewstrong": (5.0, 0.10, 0.1, False),
 }
 
-
-def sigma2_m(arm):
-    _, mean, sd, _ = ARMS[arm]
-    return mean ** 2 + sd ** 2
-
-
-def lambda_pred(arm):
-    v_s, _, _, neutral = ARMS[arm]
-    return 0.0 if neutral else sigma2_m(arm) / v_s
-
-
-def extract(path):
-    """(count, beta, age) for every segregating single-mutation site.
-
-    count  derived-allele count in the samples
-    beta   trait effect (SLiM selection_coeff; locus fitness is neutralised
-           by mutationEffect(m2) { return 1.0; })
-    age    generations before the end of the run
-    Fixed sites (count == number of samples) are excluded.
-    """
-    ts = tskit.load(path)
-    n_samp = ts.num_samples
-    tick = ts.metadata.get("SLiM", {}).get("tick") if isinstance(ts.metadata, dict) else None
-    ks, bs, ages = [], [], []
-    for v in ts.variants():
-        if len(v.site.mutations) != 1:                 # skip stacked sites
-            continue
-        mut = v.site.mutations[0]
-        ml = mut.metadata["mutation_list"]
-        if len(ml) != 1:
-            continue
-        k = int(np.count_nonzero(v.genotypes))
-        if k == 0 or k == n_samp:                       # absent or fixed
-            continue
-        age = mut.time
-        if not np.isfinite(age) and tick is not None:   # fall back to SLiM origin tick
-            age = tick - ml[0]["slim_time"]
-        ks.append(k)
-        bs.append(ml[0]["selection_coeff"])
-        ages.append(age)
-    return np.array(ks), np.array(bs, dtype=float), np.array(ages, dtype=float)
+FIELDS = ("n_s", "S_s", "n_a", "S_a", "n_y", "S_y", "n_b", "S_b")
+METRICS = (
+    "sing_over_nom", "young_over_nom", "sing_over_all", "sing_over_young",
+    "birth_over_nom", "sing_over_birth", "young_over_birth",
+)
 
 
 def arm_of(path):
-    m = re.match(r"([a-z]+)_rep\d+", os.path.basename(path))
-    return m.group(1) if m and m.group(1) in ARMS else None
+    match = re.fullmatch(r"([a-z]+)_rep\d+\.trees", os.path.basename(path))
+    return match.group(1) if match and match.group(1) in ARMS else None
 
 
-def ratios(R):
-    """Pooled ratios from per-run sums R (runs x 7 columns)."""
-    n_s, S_s, n_a, S_a, n_y, S_y, _ = R.sum(axis=0)
-    e_s = S_s / n_s
-    e_a = S_a / n_a if n_a > 0 else np.nan
-    e_y = S_y / n_y if n_y > 0 else np.nan
-    return e_s, e_a, e_y
+def extract(path):
+    """Extract effects/counts/ages from single-mutation segregating sites."""
+    ts = tskit.load(path)
+    n_samples = ts.num_samples
+    tick = (ts.metadata.get("SLiM", {}).get("tick")
+            if isinstance(ts.metadata, dict) else None)
+    counts, effects, ages = [], [], []
+    for variant in ts.variants():
+        if len(variant.site.mutations) != 1:
+            continue
+        mutation = variant.site.mutations[0]
+        try:
+            mutation_list = mutation.metadata["mutation_list"]
+            if len(mutation_list) != 1:
+                continue
+            beta = float(mutation_list[0]["selection_coeff"])
+        except (KeyError, IndexError, TypeError, ValueError):
+            continue
+        count = int(np.count_nonzero(variant.genotypes))
+        if count == 0 or count == n_samples:
+            continue
+        age = float(mutation.time)
+        if not np.isfinite(age) and tick is not None:
+            age = float(tick - mutation_list[0]["slim_time"])
+        counts.append(count)
+        effects.append(beta)
+        ages.append(age)
+    return (np.asarray(counts, dtype=np.int64),
+            np.asarray(effects, dtype=float),
+            np.asarray(ages, dtype=float))
+
+
+def read_birth(path):
+    if not os.path.isfile(path):
+        return None
+    with open(path, newline="") as fh:
+        rows = list(csv.DictReader(fh, delimiter="\t"))
+    if len(rows) != 1:
+        raise ValueError(f"expected exactly one data row in {path}")
+    row = rows[0]
+    n = float(row["n_birth"])
+    total = float(row["sum_beta2"])
+    if not np.isfinite(n) or not np.isfinite(total) or n <= 0 or total < 0:
+        raise ValueError(f"invalid birth data in {path}")
+    return n, total
+
+
+def safe_ratio(numerator, denominator):
+    return numerator / denominator if denominator > 0 else float("nan")
+
+
+def summarize(runs, nominal):
+    """Return ratios; paired birth comparisons use birth-logged replicates only."""
+    totals = {f: sum(r[f] for r in runs) for f in FIELDS}
+    sing = safe_ratio(totals["S_s"], totals["n_s"])
+    young = safe_ratio(totals["S_y"], totals["n_y"])
+    all_sites = safe_ratio(totals["S_a"], totals["n_a"])
+    out = {
+        "sing_over_nom": sing / nominal,
+        "young_over_nom": young / nominal,
+        "sing_over_all": safe_ratio(sing, all_sites),
+        "sing_over_young": safe_ratio(sing, young),
+        "birth_over_nom": float("nan"),
+        "sing_over_birth": float("nan"),
+        "young_over_birth": float("nan"),
+    }
+    paired = [r for r in runs if r["n_b"] > 0]
+    if paired:
+        sums = {f: sum(r[f] for r in paired) for f in FIELDS}
+        birth = safe_ratio(sums["S_b"], sums["n_b"])
+        paired_sing = safe_ratio(sums["S_s"], sums["n_s"])
+        paired_young = safe_ratio(sums["S_y"], sums["n_y"])
+        out.update(birth_over_nom=birth / nominal,
+                   sing_over_birth=safe_ratio(paired_sing, birth),
+                   young_over_birth=safe_ratio(paired_young, birth))
+    return out
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("directory", nargs="?", default=".")
-    ap.add_argument("--out", default=None)
-    ap.add_argument("--young-age", type=float, default=1.0,
-                    help="max age (generations) counted as 'new'; default 1")
+    ap.add_argument("--birth-dir", default=None,
+                    help="Directory containing matching *_repN.birth.tsv files (default: tree directory)")
+    ap.add_argument("--out", default=None, help="Write arm-level TSV summary")
+    ap.add_argument("--young-age", type=float, default=1.0)
     ap.add_argument("--boot", type=int, default=2000)
     ap.add_argument("--seed", type=int, default=1)
-    a = ap.parse_args()
+    args = ap.parse_args()
+    birth_dir = args.birth_dir or args.directory
 
-    files = sorted(glob.glob(os.path.join(a.directory, "*_rep*.trees")))
-    if not files:
-        sys.exit(f"no *_rep*.trees found in {a.directory}")
+    paths = sorted(glob.glob(os.path.join(args.directory, "*_rep*.trees")))
+    if not paths:
+        sys.exit(f"No *_rep*.trees files in {args.directory}")
 
-    # per-run sums: n_sing, S_sing, n_all, S_all, n_young, S_young, Sbeta_young
     runs = {arm: [] for arm in ARMS}
-
-    for path in files:
+    for path in paths:
         arm = arm_of(path)
         if arm is None:
             continue
         try:
-            k, b, age = extract(path)
-        except Exception as e:
-            print(f"  skipped {os.path.basename(path)}: {e}", file=sys.stderr)
+            counts, betas, ages = extract(path)
+            birth_path = os.path.join(
+                birth_dir, os.path.splitext(os.path.basename(path))[0] + ".birth.tsv")
+            birth = read_birth(birth_path)
+        except Exception as exc:
+            print(f"SKIP {path}: {exc}", file=sys.stderr)
             continue
-        if k.size == 0:
+        if len(counts) == 0:
+            print(f"SKIP {path}: no usable segregating sites", file=sys.stderr)
             continue
-        b2 = b ** 2
-        sing = k == 1
-        young = age <= a.young_age
-        row = [sing.sum(), b2[sing].sum(), k.size, b2.sum(),
-               young.sum(), b2[young].sum(), b[young].sum()]
-        runs[arm].append(row)
-        s2m = sigma2_m(arm)
-        es = b2[sing].mean() if sing.any() else np.nan
-        ey = b2[young].mean() if young.any() else np.nan
-        print(f"  {os.path.basename(path):26s} sing {sing.sum():5d}  young {young.sum():5d}  "
-              f"sing/nom {es/s2m:.4f}  sing/all {es/b2.mean():.4f}  "
-              f"sing/young {es/ey:.4f}", file=sys.stderr)
+        b2 = betas * betas
+        sing = counts == 1
+        young = np.isfinite(ages) & (ages >= 0) & (ages <= args.young_age)
+        r = dict(n_s=int(sing.sum()), S_s=float(b2[sing].sum()),
+                 n_a=len(b2), S_a=float(b2.sum()),
+                 n_y=int(young.sum()), S_y=float(b2[young].sum()),
+                 n_b=birth[0] if birth else 0.0,
+                 S_b=birth[1] if birth else 0.0)
+        runs[arm].append(r)
+        nominal = ARMS[arm][1] ** 2 + ARMS[arm][2] ** 2
+        print(f"{os.path.basename(path):27s} sing={r['n_s']:5d} "
+              f"young={r['n_y']:5d} birth={'yes' if birth else 'NO '} "
+              f"sing/nom={safe_ratio(r['S_s'],r['n_s'])/nominal:.5f}",
+              file=sys.stderr)
 
-    rng = np.random.default_rng(a.seed)
-    rows = []
-    print(f"\nyoung = mutations aged <= {a.young_age:g} generations\n")
-    hdr = (f"{'arm':<11}{'reps':>5}{'sing':>9}{'young':>8}{'lambda':>8}"
-           f"{'young/nom':>11}{'sing/nom':>18}{'sing/all':>18}{'sing/young':>18}")
-    print(hdr)
-    print("-" * len(hdr))
-
-    def fmt(x, se):
-        z = (x - 1) / se if se > 0 else np.nan
-        return f"{x:7.4f}±{se:.4f}({z:+5.1f})"
-
-    for arm in ARMS:
-        if not runs[arm]:
+    rng = np.random.default_rng(args.seed)
+    summary_rows = []
+    print("\nRatios use pooled sums across replicates; birth ratios use only paired replicates.")
+    print("SEs are replicate bootstrap SEs (NA when only one replicate).\n")
+    for arm, arm_runs in runs.items():
+        if not arm_runs:
             continue
-        R = np.array(runs[arm], dtype=float)
-        s2m = sigma2_m(arm)
-        e_s, e_a, e_y = ratios(R)
-        est = np.array([e_s / s2m, e_s / e_a, e_s / e_y, e_y / s2m])
+        nominal = ARMS[arm][1] ** 2 + ARMS[arm][2] ** 2
+        point = summarize(arm_runs, nominal)
+        se = {m: float("nan") for m in METRICS}
+        if len(arm_runs) >= 2 and args.boot >= 2:
+            estimates = {m: [] for m in METRICS}
+            for _ in range(args.boot):
+                indices = rng.integers(0, len(arm_runs), len(arm_runs))
+                b = summarize([arm_runs[i] for i in indices], nominal)
+                for m in METRICS:
+                    if np.isfinite(b[m]):
+                        estimates[m].append(b[m])
+            for m in METRICS:
+                if len(estimates[m]) >= 2:
+                    se[m] = float(np.std(estimates[m], ddof=1))
 
-        boots = []
-        for _ in range(a.boot):
-            idx = rng.integers(0, len(R), len(R))
-            bs_, ba_, by_ = ratios(R[idx])
-            boots.append([bs_ / s2m, bs_ / ba_, bs_ / by_, by_ / s2m])
-        se = np.nanstd(np.array(boots), axis=0, ddof=1)
-
-        n_s, n_y = int(R[:, 0].sum()), int(R[:, 4].sum())
-        mean_b_young = R[:, 6].sum() / R[:, 4].sum() if n_y else np.nan
-        print(f"{arm:<11}{len(R):5d}{n_s:9,d}{n_y:8,d}{lambda_pred(arm):8.4f}"
-              f"{est[3]:6.3f}±{se[3]:.3f} "
-              f"{fmt(est[0], se[0]):>18}{fmt(est[1], se[1]):>18}{fmt(est[2], se[2]):>18}")
-        rows.append(dict(arm=arm, reps=len(R), singletons=n_s, young=n_y,
-                         lam=lambda_pred(arm), sigma2_m=s2m,
-                         young_over_nom=est[3], young_over_nom_se=se[3],
-                         sing_over_nom=est[0], sing_over_nom_se=se[0],
-                         sing_over_all=est[1], sing_over_all_se=se[1],
-                         sing_over_young=est[2], sing_over_young_se=se[2],
-                         mean_b_young=mean_b_young))
-
-    print("\nratio±SE(z vs 1).  sing/young = kappa (the number you want).")
-    print("young/nom ~ 1 confirms the effect sizes were drawn as configured.")
-    print("For the NULL: sing/young and sing/all must both be ~1.")
-    print("For SELECTED arms: sing/all is biased upward (older variants are")
-    print("filtered harder), so read sing/young, not sing/all.")
-
-    if a.out:
-        keys = list(rows[0].keys())
-        with open(a.out, "w") as fh:
-            fh.write("\t".join(keys) + "\n")
-            for r in rows:
-                fh.write("\t".join(str(r[k_]) for k_ in keys) + "\n")
-        print(f"\nwrote {a.out}")
+        n_paired = sum(r["n_b"] > 0 for r in arm_runs)
+        print(f"{arm}: reps={len(arm_runs)}, paired birth logs={n_paired}, "
+              f"singletons={sum(r['n_s'] for r in arm_runs):,}")
+        for m in METRICS:
+            val, err = point[m], se[m]
+            print(f"  {m:19s} {val:9.5f} +/- "
+                  f"{err:.5f}" if np.isfinite(val) else f"  {m:19s} NA")
+        summary_rows.append({"arm": arm, "reps": len(arm_runs),
+                             "birth_reps": n_paired,
+                             "singletons": sum(r["n_s"] for r in arm_runs),
+                             "young": sum(r["n_y"] for r in arm_runs),
+                             "birth_mutations": int(sum(r["n_b"] for r in arm_runs)),
+                             "lambda_pred": (0.0 if ARMS[arm][3]
+                                             else nominal / ARMS[arm][0]),
+                             **point, **{m + "_se": se[m] for m in METRICS}})
+    if args.out and summary_rows:
+        with open(args.out, "w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(summary_rows[0]), delimiter="\t")
+            writer.writeheader()
+            writer.writerows(summary_rows)
+        print(f"\nWrote {args.out}")
 
 
 if __name__ == "__main__":
