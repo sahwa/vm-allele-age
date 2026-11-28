@@ -1,0 +1,185 @@
+
+//
+// v5.3 - Gaussian stabilising selection with birth diagnostics.
+//
+// Outputs:
+//   outfile.trees
+//   outfile.birth.tsv
+//   outfile.birth_recent.tsv
+//   outfile.summary.tsv
+//
+// Required: MU, PI_TARGET, L, NE, V_S, END_TICK, outfile
+// Optional: NEUTRAL, MEAN_EFFECT, SD_EFFECT,
+//           GROWTH_RATE, GROWTH_TICKS, LOG_EVERY, CKPT_EVERY
+//
+
+initialize() {
+    if (!exists("NEUTRAL"))      defineConstant("NEUTRAL", F);
+    if (!exists("MEAN_EFFECT"))  defineConstant("MEAN_EFFECT", 0.0);
+    if (!exists("SD_EFFECT"))    defineConstant("SD_EFFECT", 0.1);
+    if (!exists("GROWTH_RATE"))  defineConstant("GROWTH_RATE", 0.0);
+    if (!exists("GROWTH_TICKS")) defineConstant("GROWTH_TICKS", 0);
+    if (!exists("LOG_EVERY"))    defineConstant("LOG_EVERY", 1000);
+    if (!exists("CKPT_EVERY"))   defineConstant("CKPT_EVERY", 10000);
+
+    defineConstant("start_time", clock());
+    defineConstant("WINDOWS", c(1, 5, 20, 100));
+    defineConstant("SIGMA2_M", MEAN_EFFECT^2 + SD_EFFECT^2);
+    defineConstant("U_TRAIT", 2 * MU * PI_TARGET * L);
+    defineConstant("V_M", U_TRAIT * SIGMA2_M);
+    defineConstant("LAMBDA_PRED",
+        NEUTRAL ? 0.0 else SIGMA2_M / V_S);
+
+    initializeTreeSeq();
+    initializeMutationRate(MU * PI_TARGET);
+    initializeRecombinationRate(1e-8);
+    initializeMutationType("m2", 0.5, "n", MEAN_EFFECT, SD_EFFECT);
+    m2.convertToSubstitution = T;
+    initializeGenomicElementType("g2", m2, 1);
+    initializeGenomicElement(g2, 0, L - 1);
+}
+
+
+// Record all mutations at birth, including those later lost.
+mutation(m2) {
+    beta = mut.selectionCoeff;
+    values = c(1.0, beta, beta^2);
+
+    sim.setValue("birth_all",
+        sim.getValue("birth_all") + values);
+
+    if (community.tick > END_TICK - 100) {
+        for (w in WINDOWS) {
+            if (community.tick > END_TICK - w) {
+                key = "birth_recent_" + w;
+                sim.setValue(key, sim.getValue(key) + values);
+            }
+        }
+    }
+    return T;
+}
+
+
+// Selection acts on the additive phenotype.
+mutationEffect(m2) { return 1.0; }
+
+fitnessEffect() {
+    if (NEUTRAL) return 1.0;
+    z = individual.sumOfMutationsOfType(m2) + FIXED_OFFSET;
+    return exp(-z^2 / (2 * V_S));
+}
+
+
+1 early() {
+    sim.addSubpop("p1", NE);
+    defineGlobal("FIXED_OFFSET", 0.0);
+
+    sim.setValue("birth_all", c(0.0, 0.0, 0.0));
+    for (w in WINDOWS)
+        sim.setValue("birth_recent_" + w, c(0.0, 0.0, 0.0));
+
+    catn("=== Configuration ===");
+    catn("NEUTRAL: " + NEUTRAL + "  V_S: " + V_S);
+    catn("Effect mean: " + MEAN_EFFECT + "  SD: " + SD_EFFECT);
+    catn("sigma2_m: " + SIGMA2_M + "  U_trait: " + U_TRAIT);
+    catn("V_M: " + V_M + "  lambda_pred: " + LAMBDA_PRED);
+    catn("Growth: " + GROWTH_RATE + " for " + GROWTH_TICKS + " ticks");
+}
+
+
+// Each generation.
+1: late() {
+    defineGlobal("FIXED_OFFSET",
+        2 * sum(sim.substitutions.selectionCoeff));
+
+    if (GROWTH_RATE > 0 & GROWTH_TICKS > 0) {
+        g0 = END_TICK - GROWTH_TICKS;
+        if (community.tick > g0) {
+            newN = asInteger(round(
+                NE * exp(GROWTH_RATE * (community.tick - g0))));
+            p1.setSubpopulationSize(newN);
+        }
+    }
+
+    if (community.tick % LOG_EVERY == 0) {
+        inds = sim.subpopulations.individuals;
+        z = inds.sumOfMutationsOfType(m2) + FIXED_OFFSET;
+        vg = var(z);
+
+        catn("Tick " + community.tick + "/" + END_TICK +
+             " N=" + size(inds) +
+             " mean_z=" + format("%.3f", mean(z)) +
+             " V_G=" + format("%.4f", vg) +
+             " V_M/V_P=" + format("%.3e", V_M / vg) +
+             " V_S/V_P=" + format("%.2f",
+                 NEUTRAL ? 0.0 else V_S / vg) +
+             " n_seg=" + size(sim.mutations) +
+             " elapsed=" + format("%.0f", clock() - start_time) + "s");
+    }
+
+    if (community.tick % CKPT_EVERY == 0 &
+        community.tick < END_TICK)
+        sim.treeSeqOutput(outfile + ".tick" +
+                          community.tick + ".trees");
+}
+
+
+// Final outputs.
+END_TICK late() {
+    sim.treeSeqOutput(outfile + ".trees");
+
+    // All mutations generated during the simulation.
+    b = sim.getValue("birth_all");
+    writeFile(outfile + ".birth.tsv", c(
+        "n_birth\tsum_beta\tsum_beta2",
+        paste(b, sep="\t")
+    ));
+
+    catn("Birth ratio: " +
+        format("%.6f", b[2] / b[0] / SIGMA2_M));
+
+    // Overlapping recent birth windows.
+    lines = c("window_generations\tn_birth\tsum_beta\tsum_beta2\tmean_beta2\tratio_to_nominal");
+
+    for (w in WINDOWS) {
+        b = sim.getValue("birth_recent_" + w);
+
+        if (b[0] > 0) {
+            mean_b2 = b[2] / b[0];
+            ratio = mean_b2 / SIGMA2_M;
+        } else {
+            mean_b2 = 0.0;
+            ratio = 0.0;
+        }
+
+        lines = c(lines, paste(
+            c(w, b, mean_b2, ratio), sep="\t"));
+
+        catn("Births last " + w + " gen: n=" + b[0] +
+             " ratio=" + format("%.6f", ratio));
+    }
+
+    writeFile(outfile + ".birth_recent.tsv", lines);
+
+    // Simulation summary.
+    inds = sim.subpopulations.individuals;
+    z = inds.sumOfMutationsOfType(m2) + FIXED_OFFSET;
+    vg = var(z);
+
+    hdr = c("outfile", "neutral", "V_S", "mean_effect",
+            "sd_effect", "sigma2_m", "U_trait", "V_M",
+            "N_final", "V_G", "V_M_over_V_P",
+            "V_S_over_V_P", "lambda_pred", "n_seg", "n_subs");
+
+    vals = c(outfile, NEUTRAL, V_S, MEAN_EFFECT, SD_EFFECT,
+             SIGMA2_M, U_TRAIT, V_M, size(inds), vg,
+             V_M / vg, NEUTRAL ? 0.0 else V_S / vg,
+             LAMBDA_PRED, size(sim.mutations),
+             size(sim.substitutions));
+
+    writeFile(outfile + ".summary.tsv",
+        c(paste(hdr, sep="\t"), paste(vals, sep="\t")));
+
+    catn("Wrote all outputs for " + outfile);
+    sim.simulationFinished();
+}
